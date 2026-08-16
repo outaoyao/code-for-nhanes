@@ -1,0 +1,4475 @@
+################################################################################
+# STEP22_v2. NHANES Sun-protective Behavior Engineering
+#
+# Primary:
+# DEQ034A=6 treated as missing
+#
+# Sensitivity:
+# DEQ034A=6 classified as high sun avoidance
+#
+# No composite score
+#
+# Output:
+# D:/code/DEQ.data.rds
+################################################################################
+
+
+rm(list=ls())
+gc()
+
+
+library(nhanesA)
+library(tidyverse)
+
+
+################################################################################
+# PATH
+################################################################################
+
+base_path <- "D:/code"
+
+qc_dir <- file.path(
+  base_path,
+  "qc_outputs"
+)
+
+dir.create(
+  qc_dir,
+  recursive=TRUE,
+  showWarnings=FALSE
+)
+
+
+
+################################################################################
+# Helper
+################################################################################
+
+clean_deq <- function(x,valid){
+  
+  x <- suppressWarnings(as.numeric(x))
+  
+  ifelse(
+    x %in% valid,
+    x,
+    NA_real_
+  )
+  
+}
+
+
+
+################################################################################
+# Processing function
+################################################################################
+
+
+process_DEQ <- function(table_name,cycle_label){
+  
+  cat(
+    "Processing:",
+    cycle_label,
+    "\n"
+  )
+  
+  
+  raw <- nhanes(table_name)
+  
+  
+  vars <- c(
+    "SEQN",
+    "DEQ034A",
+    "DEQ034C",
+    "DEQ034D"
+  )
+  
+  
+  missing_vars <- setdiff(
+    vars,
+    names(raw)
+  )
+  
+  
+  if(length(missing_vars)>0)
+    stop(
+      "Missing variables:",
+      paste(missing_vars,collapse=", ")
+    )
+  
+  
+  
+  raw %>%
+    select(all_of(vars)) %>%
+    mutate(
+      
+      SEQN=as.numeric(SEQN),
+      
+      DEQ034A_raw=DEQ034A,
+      DEQ034C_raw=DEQ034C,
+      DEQ034D_raw=DEQ034D,
+      
+      
+      DEQ034A=
+        clean_deq(
+          DEQ034A,
+          c(1,2,3,4,5,6)
+        ),
+      
+      
+      DEQ034C=
+        clean_deq(
+          DEQ034C,
+          c(1,2,3,4,5)
+        ),
+      
+      
+      DEQ034D=
+        clean_deq(
+          DEQ034D,
+          c(1,2,3,4,5)
+        ),
+      
+      
+      
+      ############################################################
+      # Primary definition
+      #
+      # 1/2 = active shade avoidance
+      # 3/4/5 = no active avoidance
+      # 6 = Don't go out in sun -> missing
+      ############################################################
+      
+      shade_avoidance =
+        case_when(
+          
+          DEQ034A %in% c(1,2) ~ 1,
+          
+          DEQ034A %in% c(3,4,5) ~ 0,
+          
+          TRUE ~ NA_real_
+          
+        ),
+      
+      
+      
+      ############################################################
+      # Sensitivity definition
+      #
+      # Assume DEQ034A=6 represents extreme sun avoidance
+      ############################################################
+      
+      
+      shade_avoidance_sensitivity =
+        case_when(
+          
+          DEQ034A %in% c(1,2,6) ~ 1,
+          
+          DEQ034A %in% c(3,4,5) ~ 0,
+          
+          TRUE ~ NA_real_
+          
+        ),
+      
+      
+      
+      ############################################################
+      
+      long_sleeve_behavior =
+        case_when(
+          
+          DEQ034C %in% c(1,2) ~ 1,
+          
+          DEQ034C %in% c(3,4,5) ~ 0,
+          
+          TRUE ~ NA_real_
+          
+        ),
+      
+      
+      
+      sunscreen_behavior =
+        case_when(
+          
+          DEQ034D %in% c(1,2) ~ 1,
+          
+          DEQ034D %in% c(3,4,5) ~ 0,
+          
+          TRUE ~ NA_real_
+          
+        ),
+      
+      
+      
+      CYCLE=cycle_label
+      
+    )
+  
+}
+
+
+
+################################################################################
+# Process cycles
+################################################################################
+
+
+deq_1720 <-
+  process_DEQ(
+    "P_DEQ",
+    "2017-2020"
+  )
+
+
+deq_2123 <-
+  process_DEQ(
+    "DEQ_L",
+    "2021-2023"
+  )
+
+
+
+DEQ <-
+  bind_rows(
+    deq_1720,
+    deq_2123
+  )
+
+
+
+################################################################################
+# QC
+################################################################################
+
+
+cat("\nSample size:\n")
+
+print(nrow(DEQ))
+
+
+
+cat("\nPrimary vs Sensitivity shade avoidance:\n")
+
+
+shade_QC <-
+  DEQ %>%
+  count(
+    shade_avoidance,
+    shade_avoidance_sensitivity
+  )
+
+
+print(shade_QC)
+
+
+
+missing_QC <-
+  DEQ %>%
+  summarise(
+    
+    N=n(),
+    
+    missing_primary=
+      sum(is.na(shade_avoidance)),
+    
+    missing_sensitivity=
+      sum(is.na(shade_avoidance_sensitivity)),
+    
+    missing_long_sleeve=
+      sum(is.na(long_sleeve_behavior)),
+    
+    missing_sunscreen=
+      sum(is.na(sunscreen_behavior))
+    
+  )
+
+
+print(missing_QC)
+
+
+
+write_csv(
+  shade_QC,
+  file.path(
+    qc_dir,
+    "Step22_DEQ_shade_primary_vs_sensitivity_QC.csv"
+  )
+)
+
+
+write_csv(
+  missing_QC,
+  file.path(
+    qc_dir,
+    "Step22_DEQ_missingness_QC.csv"
+  )
+)
+
+
+
+################################################################################
+# Export
+################################################################################
+
+
+saveRDS(
+  DEQ,
+  file.path(
+    base_path,
+    "DEQ.data.rds"
+  )
+)
+
+
+cat(
+  "\nSTEP22_v2 DEQ engineering completed\n"
+)
+
+################################################################################
+# STEP23. DEQ merge + MI integration FINAL
+#
+# Purpose:
+# Integrate NHANES sun-protective behavior variables into
+# multiply imputed sleep rhythm analysis datasets.
+#
+# Exposure variables:
+#
+# 1. shade_avoidance
+#    Primary definition:
+#    DEQ034A=6 treated as missing
+#
+# 2. shade_avoidance_sensitivity
+#    Sensitivity:
+#    DEQ034A=6 classified as high avoidance
+#
+# 3. long_sleeve_behavior
+#
+# 4. sunscreen_behavior
+#
+#
+# Input:
+# 18.MI_sleep_rhythm_analysis_list_FINAL.rds
+# DEQ.data.rds
+#
+# Output:
+# 19.MI_sleep_rhythm_DEQ_behavior_analysis_list_FINAL.rds
+#
+# READ ONLY
+################################################################################
+
+
+rm(list=ls())
+gc()
+
+
+################################################################################
+# 1. Libraries
+################################################################################
+
+library(tidyverse)
+
+
+
+################################################################################
+# 2. Paths
+################################################################################
+
+root_dir <- "D:/code"
+
+
+MI_file <- file.path(
+  root_dir,
+  "18.MI_sleep_rhythm_analysis_list_FINAL.rds"
+)
+
+
+DEQ_file <- file.path(
+  root_dir,
+  "DEQ.data.rds"
+)
+
+
+out_dir <- file.path(
+  root_dir,
+  "Step23_DEQ_merge_MI_QC"
+)
+
+
+dir.create(
+  out_dir,
+  recursive=TRUE,
+  showWarnings=FALSE
+)
+
+
+output_file <- file.path(
+  root_dir,
+  "19.MI_sleep_rhythm_DEQ_behavior_analysis_list_FINAL.rds"
+)
+
+
+
+################################################################################
+# 3. Load data
+################################################################################
+
+
+if(!file.exists(MI_file))
+  stop("Missing MI file")
+
+
+if(!file.exists(DEQ_file))
+  stop("Missing DEQ file")
+
+
+MI_list <- readRDS(MI_file)
+
+DEQ <- readRDS(DEQ_file)
+
+
+
+if(!is.list(MI_list))
+  stop("MI object is not list")
+
+
+cat(
+  "Number of MI datasets:",
+  length(MI_list),
+  "\n"
+)
+
+
+cat(
+  "MI N:",
+  nrow(MI_list[[1]]),
+  "\n"
+)
+
+
+cat(
+  "DEQ N:",
+  nrow(DEQ),
+  "\n"
+)
+
+
+
+################################################################################
+# 4. Required variables QC
+################################################################################
+
+
+required_DEQ <- c(
+  
+  "SEQN",
+  
+  "shade_avoidance",
+  
+  "shade_avoidance_sensitivity",
+  
+  "long_sleeve_behavior",
+  
+  "sunscreen_behavior"
+  
+)
+
+
+missing_DEQ <-
+  setdiff(
+    required_DEQ,
+    names(DEQ)
+  )
+
+
+if(length(missing_DEQ)>0){
+  
+  stop(
+    "Missing DEQ variables:",
+    paste(
+      missing_DEQ,
+      collapse=", "
+    )
+  )
+  
+}
+
+
+
+if(!"SEQN" %in% names(MI_list[[1]]))
+  stop("SEQN missing in MI dataset")
+
+
+
+################################################################################
+# 5. Duplicate SEQN check
+################################################################################
+
+
+dup_DEQ <- DEQ %>%
+  count(SEQN) %>%
+  filter(n>1)
+
+
+cat(
+  "DEQ duplicated SEQN:",
+  nrow(dup_DEQ),
+  "\n"
+)
+
+
+if(nrow(dup_DEQ)>0)
+  stop("Duplicate SEQN detected")
+
+
+
+################################################################################
+# 6. Match QC before merge
+################################################################################
+
+
+MI_SEQN <- MI_list[[1]]$SEQN
+
+
+match_QC <- data.frame(
+  
+  item=c(
+    
+    "MI cohort N",
+    
+    "DEQ cohort N",
+    
+    "Matched N",
+    
+    "Unmatched MI N",
+    
+    "DEQ coverage (%)"
+    
+  ),
+  
+  
+  value=c(
+    
+    length(MI_SEQN),
+    
+    nrow(DEQ),
+    
+    sum(MI_SEQN %in% DEQ$SEQN),
+    
+    sum(!MI_SEQN %in% DEQ$SEQN),
+    
+    round(
+      mean(MI_SEQN %in% DEQ$SEQN)*100,
+      2
+    )
+    
+  )
+  
+)
+
+
+print(match_QC)
+
+
+
+write_csv(
+  match_QC,
+  file.path(
+    out_dir,
+    "Step23_DEQ_match_QC.csv"
+  )
+)
+
+
+
+################################################################################
+# 7. Merge function
+################################################################################
+
+
+merge_DEQ <- function(dat){
+  
+  
+  dat %>%
+    
+    left_join(
+      
+      DEQ %>%
+        
+        select(
+          
+          SEQN,
+          
+          shade_avoidance,
+          
+          shade_avoidance_sensitivity,
+          
+          long_sleeve_behavior,
+          
+          sunscreen_behavior
+          
+        ),
+      
+      by="SEQN"
+      
+    )
+  
+  
+}
+
+
+
+################################################################################
+# 8. Apply merge to all MI datasets
+################################################################################
+
+
+MI_DEQ_list <-
+  lapply(
+    MI_list,
+    merge_DEQ
+  )
+
+
+
+################################################################################
+# 9. Post merge QC
+################################################################################
+
+
+merge_QC <- map_dfr(
+  
+  seq_along(MI_DEQ_list),
+  
+  function(i){
+    
+    dat <- MI_DEQ_list[[i]]
+    
+    
+    data.frame(
+      
+      MI=i,
+      
+      N=nrow(dat),
+      
+      shade_available=
+        sum(!is.na(dat$shade_avoidance)),
+      
+      shade_sensitive_available=
+        sum(!is.na(dat$shade_avoidance_sensitivity)),
+      
+      long_sleeve_available=
+        sum(!is.na(dat$long_sleeve_behavior)),
+      
+      sunscreen_available=
+        sum(!is.na(dat$sunscreen_behavior))
+      
+    )
+    
+  }
+  
+)
+
+
+
+print(merge_QC)
+
+
+write_csv(
+  
+  merge_QC,
+  
+  file.path(
+    out_dir,
+    "Step23_DEQ_postmerge_QC.csv"
+  )
+  
+)
+
+
+
+################################################################################
+# 10. DEQ missingness QC
+################################################################################
+
+
+DEQ_missing_QC <-
+  MI_DEQ_list[[1]] %>%
+  
+  summarise(
+    
+    N=n(),
+    
+    missing_shade=
+      sum(is.na(shade_avoidance)),
+    
+    missing_shade_sensitivity=
+      sum(is.na(shade_avoidance_sensitivity)),
+    
+    missing_long_sleeve=
+      sum(is.na(long_sleeve_behavior)),
+    
+    missing_sunscreen=
+      sum(is.na(sunscreen_behavior))
+    
+  )
+
+
+
+print(DEQ_missing_QC)
+
+
+
+write_csv(
+  
+  DEQ_missing_QC,
+  
+  file.path(
+    out_dir,
+    "Step23_DEQ_missingness_QC.csv"
+  )
+  
+)
+
+
+
+################################################################################
+# 11. Distribution QC
+################################################################################
+
+
+behavior_QC <-
+  MI_DEQ_list[[1]] %>%
+  
+  summarise(
+    
+    N=n(),
+    
+    shade_positive=
+      sum(shade_avoidance==1,na.rm=TRUE),
+    
+    shade_sensitive_positive=
+      sum(shade_avoidance_sensitivity==1,na.rm=TRUE),
+    
+    long_sleeve_positive=
+      sum(long_sleeve_behavior==1,na.rm=TRUE),
+    
+    sunscreen_positive=
+      sum(sunscreen_behavior==1,na.rm=TRUE)
+    
+  )
+
+
+
+print(behavior_QC)
+
+
+write_csv(
+  
+  behavior_QC,
+  
+  file.path(
+    out_dir,
+    "Step23_DEQ_behavior_distribution_QC.csv"
+  )
+  
+)
+
+
+
+################################################################################
+# 12. Save merged MI object
+################################################################################
+
+
+saveRDS(
+  
+  MI_DEQ_list,
+  
+  output_file
+  
+)
+
+
+
+################################################################################
+# 13. Final message
+################################################################################
+
+
+cat(
+  "\n====================================\n"
+)
+
+cat(
+  "STEP23 DEQ merge MI integration COMPLETE\n"
+)
+
+cat(
+  "Output:",
+  output_file,
+  "\n"
+)
+
+cat(
+  "MI datasets:",
+  length(MI_DEQ_list),
+  "\n"
+)
+
+cat(
+  "N per MI:",
+  nrow(MI_DEQ_list[[1]]),
+  "\n"
+)
+
+cat(
+  "====================================\n"
+)
+
+################################################################################
+# STEP24 FINAL
+# NHANES Sun-protective Behavior and Depressive Symptoms
+#
+# Exploratory survey-weighted logistic regression
+#
+# Exposures:
+#   1. shade_avoidance
+#   2. shade_avoidance_sensitivity
+#   3. long_sleeve_behavior
+#   4. sunscreen_behavior
+#
+# Outcome:
+#   PHQ9_depression_above_10
+#
+# Model 1:
+#   age + sex
+#
+# Model 2:
+#   same covariate specification as STEP19 fully adjusted Model 4
+#
+# Model 3:
+#   Model 2 + sleep_rhythm_index_z
+#
+# 20 MI datasets + NHANES complex survey + Rubin pooling
+################################################################################
+
+rm(list=ls()); gc()
+
+library(tidyverse)
+library(survey)
+
+options(survey.lonely.psu="adjust")
+
+# ==============================================================================
+# 1. PATHS
+# ==============================================================================
+
+root_dir <- "D:/code"
+input_file <- file.path(root_dir,"19.MI_sleep_rhythm_DEQ_behavior_analysis_list_FINAL.rds")
+out_dir <- file.path(root_dir,"Step24_DEQ_behavior_individual_model_FINAL")
+
+dir.create(out_dir,recursive=TRUE,showWarnings=FALSE)
+
+if(!file.exists(input_file)) stop("Cannot find input file: ",input_file)
+
+# ==============================================================================
+# 2. LOAD MI DATA
+# ==============================================================================
+
+MI_list <- readRDS(input_file)
+
+if(!is.list(MI_list) || length(MI_list)<2)
+  stop("Input must be a list of multiply imputed datasets.")
+
+M <- length(MI_list)
+
+cat("MI datasets:",M,"\n")
+cat("N per MI:",nrow(MI_list[[1]]),"\n")
+
+# ==============================================================================
+# 3. VARIABLES
+# ==============================================================================
+
+outcome <- "PHQ9_depression_above_10"
+raw_rhythm <- "sleep_rhythm_disruption_index"
+rhythm_z <- "sleep_rhythm_index_z"
+
+exposure_list <- c(
+  "shade_avoidance",
+  "shade_avoidance_sensitivity",
+  "long_sleeve_behavior",
+  "sunscreen_behavior"
+)
+
+# Same basic demographic adjustment structure
+cov_model1 <- c(
+  "RIDAGEYR",
+  "sex"
+)
+
+# EXACTLY SAME covariates as STEP19 fully adjusted Model 4
+cov_model2 <- c(
+  "RIDAGEYR",
+  "sex",
+  "race_ethnicity",
+  "education",
+  "INDFMPIR",
+  "BMI_value",
+  "MET_total",
+  "sedentary_min",
+  "smoke_status",
+  "Alcohol_Status",
+  "diabetes_or_prediabetes",
+  "htn_status",
+  "work_status"
+)
+
+# Exploratory additional adjustment for primary sleep-rhythm exposure
+cov_model3 <- c(
+  cov_model2,
+  rhythm_z
+)
+
+models <- list(
+  Model1_age_sex=cov_model1,
+  Model2_full=cov_model2,
+  Model3_full_plus_sleep_rhythm=cov_model3
+)
+
+design_vars <- c(
+  "SDMVPSU",
+  "SDMVSTRA",
+  "mec_adj"
+)
+
+categorical_vars <- c(
+  "sex",
+  "race_ethnicity",
+  "education",
+  "smoke_status",
+  "Alcohol_Status",
+  "diabetes_or_prediabetes",
+  "htn_status",
+  "work_status"
+)
+
+required_vars <- unique(c(
+  outcome,
+  raw_rhythm,
+  exposure_list,
+  cov_model2,
+  design_vars
+))
+
+# ==============================================================================
+# 4. VARIABLE QC ACROSS ALL MI DATASETS
+# ==============================================================================
+
+missing_qc <- map_dfr(seq_len(M),function(i){
+  
+  miss <- setdiff(required_vars,names(MI_list[[i]]))
+  
+  tibble(
+    MI=i,
+    missing=if(length(miss)==0) "" else paste(miss,collapse=" | ")
+  )
+})
+
+write_csv(
+  missing_qc,
+  file.path(out_dir,"Step24_variable_QC.csv")
+)
+
+if(any(missing_qc$missing!="")){
+  print(missing_qc)
+  stop("Required variables are missing in one or more MI datasets.")
+}
+
+cat("Variable QC passed.\n")
+
+# ==============================================================================
+# 5. COMMON SLEEP-RHYTHM STANDARDIZATION
+# ==============================================================================
+
+# Exposure is unchanged across MI datasets.
+# Use one common mean/SD, identical to STEP19 logic.
+
+x <- MI_list[[1]][[raw_rhythm]]
+
+x_mean <- mean(x,na.rm=TRUE)
+x_sd <- sd(x,na.rm=TRUE)
+
+if(!is.finite(x_mean) || !is.finite(x_sd) || x_sd<=0)
+  stop("Invalid sleep rhythm disruption index mean/SD.")
+
+cat("Sleep rhythm index mean:",x_mean,"\n")
+cat("Sleep rhythm index SD  :",x_sd,"\n")
+
+# ==============================================================================
+# 6. DATA PREPARATION
+# ==============================================================================
+
+prepare_data <- function(dat){
+  
+  # Preserve existing factor levels where already factors
+  for(v in categorical_vars){
+    if(!is.factor(dat[[v]])) dat[[v]] <- factor(dat[[v]])
+  }
+  
+  dat <- dat %>%
+    mutate(
+      sleep_rhythm_index_z=(.data[[raw_rhythm]]-x_mean)/x_sd,
+      PHQ9_depression_above_10=case_when(
+        .data[[outcome]] %in% c(1,"1","Yes") ~ 1,
+        .data[[outcome]] %in% c(0,"0","No") ~ 0,
+        TRUE ~ NA_real_
+      )
+    )
+  
+  dat
+}
+
+MI_list <- lapply(MI_list,prepare_data)
+
+# ==============================================================================
+# 7. FACTOR QC
+# ==============================================================================
+
+factor_qc <- expand.grid(
+  MI=seq_len(M),
+  variable=categorical_vars,
+  stringsAsFactors=FALSE
+)
+
+factor_qc$is_factor <- mapply(
+  function(i,v) is.factor(MI_list[[i]][[v]]),
+  factor_qc$MI,
+  factor_qc$variable
+)
+
+write_csv(
+  factor_qc,
+  file.path(out_dir,"Step24_factor_QC.csv")
+)
+
+if(any(!factor_qc$is_factor)){
+  print(factor_qc %>% filter(!is_factor))
+  stop("Categorical covariate factor QC failed.")
+}
+
+cat("Factor QC passed.\n")
+
+# ==============================================================================
+# 8. BINARY EXPOSURE QC
+# ==============================================================================
+
+binary_qc <- map_dfr(exposure_list,function(v){
+  
+  vals <- sort(unique(na.omit(MI_list[[1]][[v]])))
+  
+  tibble(
+    Exposure=v,
+    Values=paste(vals,collapse=" | "),
+    Binary_01=identical(as.numeric(vals),c(0,1)),
+    Available=sum(!is.na(MI_list[[1]][[v]])),
+    Positive=sum(MI_list[[1]][[v]]==1,na.rm=TRUE)
+  )
+})
+
+print(binary_qc)
+
+write_csv(
+  binary_qc,
+  file.path(out_dir,"Step24_binary_exposure_QC.csv")
+)
+
+if(any(!binary_qc$Binary_01))
+  stop("One or more DEQ exposure variables are not strictly coded 0/1.")
+
+# ==============================================================================
+# 9. SLEEP RHYTHM Z-SCORE QC
+# ==============================================================================
+
+rhythm_qc <- tibble(
+  N=sum(!is.na(MI_list[[1]][[rhythm_z]])),
+  Mean=mean(MI_list[[1]][[rhythm_z]],na.rm=TRUE),
+  SD=sd(MI_list[[1]][[rhythm_z]],na.rm=TRUE),
+  Median=median(MI_list[[1]][[rhythm_z]],na.rm=TRUE)
+)
+
+print(rhythm_qc)
+
+write_csv(
+  rhythm_qc,
+  file.path(out_dir,"Step24_sleep_rhythm_z_QC.csv")
+)
+
+# ==============================================================================
+# 10. SURVEY DESIGN LIST
+# ==============================================================================
+
+# Build the survey design on the full MI analytic cohort first.
+# DEQ analyses are then treated as survey subpopulation analyses.
+
+design_list <- lapply(MI_list,function(dat){
+  
+  svydesign(
+    id=~SDMVPSU,
+    strata=~SDMVSTRA,
+    weights=~mec_adj,
+    nest=TRUE,
+    data=dat
+  )
+})
+
+# ==============================================================================
+# 11. MODEL FUNCTION
+# ==============================================================================
+
+run_model <- function(i,exposure,model_name,covariates){
+  
+  dat <- MI_list[[i]]
+  design <- design_list[[i]]
+  
+  available <- !is.na(dat[[exposure]]) &
+    !is.na(dat[[outcome]])
+  
+  n_available <- sum(available)
+  n_events <- sum(dat[[outcome]][available]==1,na.rm=TRUE)
+  
+  if(n_available==0){
+    return(tibble(
+      Exposure=exposure,Model=model_name,MI=i,
+      N=0,Events=0,beta=NA_real_,SE=NA_real_,
+      Status="No available observations"
+    ))
+  }
+  
+  # Survey subpopulation rather than rebuilding design after filtering
+  dsub <- subset(design,available)
+  
+  formula_model <- as.formula(
+    paste(
+      outcome,
+      "~",
+      paste(c(exposure,covariates),collapse="+")
+    )
+  )
+  
+  fit <- tryCatch(
+    svyglm(
+      formula_model,
+      design=dsub,
+      family=quasibinomial()
+    ),
+    error=function(e) NULL
+  )
+  
+  if(is.null(fit)){
+    return(tibble(
+      Exposure=exposure,Model=model_name,MI=i,
+      N=n_available,Events=n_events,beta=NA_real_,SE=NA_real_,
+      Status="Model failed"
+    ))
+  }
+  
+  b <- coef(fit)
+  V <- vcov(fit)
+  
+  if(!exposure %in% names(b)){
+    return(tibble(
+      Exposure=exposure,Model=model_name,MI=i,
+      N=n_available,Events=n_events,beta=NA_real_,SE=NA_real_,
+      Status="Exposure coefficient missing"
+    ))
+  }
+  
+  tibble(
+    Exposure=exposure,
+    Model=model_name,
+    MI=i,
+    N=n_available,
+    Events=n_events,
+    beta=unname(b[exposure]),
+    SE=sqrt(V[exposure,exposure]),
+    Status="Success"
+  )
+}
+
+# ==============================================================================
+# 12. RUN ALL MODELS
+# ==============================================================================
+
+results <- map_dfr(seq_len(M),function(i){
+  
+  cat("Running MI:",i,"\n")
+  
+  map_dfr(exposure_list,function(exp_var){
+    
+    map_dfr(names(models),function(model_name){
+      
+      run_model(
+        i=i,
+        exposure=exp_var,
+        model_name=model_name,
+        covariates=models[[model_name]]
+      )
+    })
+  })
+})
+
+write_csv(
+  results,
+  file.path(out_dir,"Step24_MI_specific_results.csv")
+)
+
+# ==============================================================================
+# 13. MODEL STATUS QC
+# ==============================================================================
+
+status_qc <- results %>%
+  count(Exposure,Model,Status)
+
+print(status_qc)
+
+write_csv(
+  status_qc,
+  file.path(out_dir,"Step24_model_status_QC.csv")
+)
+
+if(any(results$Status!="Success")){
+  cat("\nWARNING: Non-successful models detected:\n")
+  print(results %>% filter(Status!="Success"))
+}
+
+# ==============================================================================
+# 14. RUBIN POOLING
+# ==============================================================================
+
+pool_scalar <- function(df){
+  
+  ok <- is.finite(df$beta) & is.finite(df$SE)
+  
+  beta <- df$beta[ok]
+  se <- df$SE[ok]
+  
+  m <- length(beta)
+  
+  if(m<2){
+    return(tibble(
+      M=m,beta=NA_real_,SE=NA_real_,df=NA_real_,
+      OR=NA_real_,Lower95=NA_real_,Upper95=NA_real_,P=NA_real_
+    ))
+  }
+  
+  qbar <- mean(beta)
+  W <- mean(se^2)
+  B <- var(beta)
+  
+  T <- W+(1+1/m)*B
+  SE_pool <- sqrt(T)
+  
+  # Rubin large-sample degrees of freedom
+  if(is.finite(B) && B>0 && is.finite(W) && W>0){
+    r <- ((1+1/m)*B)/W
+    df <- (m-1)*(1+1/r)^2
+  }else{
+    df <- Inf
+  }
+  
+  crit <- if(is.finite(df)) qt(0.975,df=df) else qnorm(0.975)
+  stat <- qbar/SE_pool
+  
+  p <- if(is.finite(df)){
+    2*pt(abs(stat),df=df,lower.tail=FALSE)
+  }else{
+    2*pnorm(abs(stat),lower.tail=FALSE)
+  }
+  
+  tibble(
+    M=m,
+    beta=qbar,
+    SE=SE_pool,
+    df=df,
+    OR=exp(qbar),
+    Lower95=exp(qbar-crit*SE_pool),
+    Upper95=exp(qbar+crit*SE_pool),
+    P=p
+  )
+}
+
+pooled_results <- results %>%
+  filter(Status=="Success") %>%
+  group_by(Exposure,Model) %>%
+  group_modify(~pool_scalar(.x)) %>%
+  ungroup()
+
+# ==============================================================================
+# 15. LABELS + PUBLICATION TABLE
+# ==============================================================================
+
+exposure_labels <- c(
+  shade_avoidance="Frequent shade seeking",
+  shade_avoidance_sensitivity="Frequent shade seeking (sensitivity definition)",
+  long_sleeve_behavior="Frequent long-sleeved clothing use",
+  sunscreen_behavior="Frequent sunscreen use"
+)
+
+model_labels <- c(
+  Model1_age_sex="Model 1",
+  Model2_full="Model 2",
+  Model3_full_plus_sleep_rhythm="Model 3"
+)
+
+publication_table <- pooled_results %>%
+  mutate(
+    Behavior=recode(Exposure,!!!exposure_labels),
+    Model_label=recode(Model,!!!model_labels),
+    OR_95CI=sprintf("%.2f (%.2f-%.2f)",OR,Lower95,Upper95),
+    P_fmt=case_when(
+      is.na(P) ~ NA_character_,
+      P<0.001 ~ "<0.001",
+      TRUE ~ sprintf("%.3f",P)
+    )
+  ) %>%
+  select(
+    Behavior,
+    Model=Model_label,
+    M,
+    OR,
+    Lower95,
+    Upper95,
+    OR_95CI,
+    P=P_fmt
+  )
+
+write_csv(
+  pooled_results,
+  file.path(out_dir,"Step24_Rubin_pooled_results.csv")
+)
+
+write_csv(
+  publication_table,
+  file.path(out_dir,"Step24_publication_results.csv")
+)
+
+# ==============================================================================
+# 16. ANALYTIC SAMPLE QC
+# ==============================================================================
+
+sample_qc <- results %>%
+  filter(MI==1) %>%
+  select(
+    Exposure,
+    Model,
+    N,
+    Events
+  )
+
+write_csv(
+  sample_qc,
+  file.path(out_dir,"Step24_analytic_sample_QC.csv")
+)
+
+# ==============================================================================
+# 17. PRIMARY VS SHADE SENSITIVITY QC
+# ==============================================================================
+
+shade_compare <- publication_table %>%
+  filter(
+    Behavior %in% c(
+      "Frequent shade seeking",
+      "Frequent shade seeking (sensitivity definition)"
+    )
+  )
+
+write_csv(
+  shade_compare,
+  file.path(out_dir,"Step24_shade_definition_sensitivity_results.csv")
+)
+# ==============================================================================
+# FDR correction for primary exploratory behavior analyses
+# Model 2 only; primary behavior definitions
+# ==============================================================================
+
+fdr_table <- pooled_results %>%
+  filter(
+    Model=="Model2_full",
+    Exposure %in% c(
+      "shade_avoidance",
+      "long_sleeve_behavior",
+      "sunscreen_behavior"
+    )
+  ) %>%
+  mutate(
+    P_FDR=p.adjust(P,method="fdr"),
+    P_FDR_fmt=ifelse(
+      P_FDR<0.001,
+      "<0.001",
+      sprintf("%.3f",P_FDR)
+    )
+  )
+
+print(fdr_table)
+
+write_csv(
+  fdr_table,
+  file.path(
+    out_dir,
+    "Step24_Model2_primary_behaviors_FDR.csv"
+  )
+)
+# ==============================================================================
+# 18. FINAL QC SUMMARY
+# ==============================================================================
+
+final_qc <- tibble(
+  Item=c(
+    "MI datasets",
+    "N per MI",
+    "Outcome",
+    "Primary covariate model",
+    "Additional Model 3 adjustment",
+    "Survey weight",
+    "PSU",
+    "Strata",
+    "Pooling"
+  ),
+  Value=c(
+    M,
+    nrow(MI_list[[1]]),
+    outcome,
+    "Same covariates as STEP19 fully adjusted Model 4",
+    rhythm_z,
+    "mec_adj",
+    "SDMVPSU",
+    "SDMVSTRA",
+    "Rubin rules with finite-df t inference"
+  )
+)
+
+write_csv(
+  final_qc,
+  file.path(out_dir,"Step24_FINAL_QC.csv")
+)
+
+# ==============================================================================
+# 19. FINAL OUTPUT
+# ==============================================================================
+
+cat("\n============================================================\n")
+cat("STEP24 DEQ INDIVIDUAL BEHAVIOR ANALYSIS COMPLETE\n")
+cat("============================================================\n")
+cat("MI datasets :",M,"\n")
+cat("Outcome     :",outcome,"\n")
+cat("Model 2     : Same covariates as STEP19 fully adjusted model\n")
+cat("Model 3     : Model 2 + sleep_rhythm_index_z\n")
+cat("Pooling     : Rubin rules with finite-df t inference\n")
+cat("Output      :",out_dir,"\n")
+cat("============================================================\n\n")
+
+print(publication_table)
+
+################################################################################
+# STEP25 FINAL
+# NHANES Sun-protective Behaviors and Sleep Rhythm Disruption
+#
+# Exploratory survey-weighted linear regression
+#
+# Primary exposures:
+#   1. shade_avoidance
+#   2. long_sleeve_behavior
+#   3. sunscreen_behavior
+#
+# Sensitivity exposure:
+#   shade_avoidance_sensitivity
+#
+# Outcome:
+#   sleep_rhythm_index_z
+#
+# Model 1:
+#   age + sex
+#
+# Model 2:
+#   same covariate specification as STEP19 fully adjusted Model 4
+#
+# Analysis:
+#   20 MI datasets + NHANES complex survey + Rubin pooling
+#
+# Multiplicity:
+#   BH-FDR across ALL 8 reported exposure-model tests
+################################################################################
+
+rm(list=ls()); gc()
+
+library(tidyverse)
+library(survey)
+
+options(survey.lonely.psu="adjust")
+
+# ==============================================================================
+# 1. PATHS
+# ==============================================================================
+
+root_dir <- "D:/code"
+input_file <- file.path(root_dir,"19.MI_sleep_rhythm_DEQ_behavior_analysis_list_FINAL.rds")
+out_dir <- file.path(root_dir,"Step25_DEQ_behavior_sleep_rhythm_FINAL_ALL_FDR")
+
+dir.create(out_dir,recursive=TRUE,showWarnings=FALSE)
+
+if(!file.exists(input_file))
+  stop("Cannot find input file: ",input_file)
+
+# ==============================================================================
+# 2. LOAD MI DATA
+# ==============================================================================
+
+MI_list <- readRDS(input_file)
+
+if(!is.list(MI_list) || length(MI_list)<2)
+  stop("Input must be a list of multiply imputed datasets.")
+
+M <- length(MI_list)
+
+cat("MI datasets:",M,"\n")
+cat("N per MI:",nrow(MI_list[[1]]),"\n")
+
+# ==============================================================================
+# 3. VARIABLES
+# ==============================================================================
+
+raw_rhythm <- "sleep_rhythm_disruption_index"
+outcome <- "sleep_rhythm_index_z"
+
+primary_exposures <- c(
+  "shade_avoidance",
+  "long_sleeve_behavior",
+  "sunscreen_behavior"
+)
+
+sensitivity_exposure <- "shade_avoidance_sensitivity"
+
+all_exposures <- c(
+  primary_exposures,
+  sensitivity_exposure
+)
+
+cov_model1 <- c(
+  "RIDAGEYR",
+  "sex"
+)
+
+cov_model2 <- c(
+  "RIDAGEYR",
+  "sex",
+  "race_ethnicity",
+  "education",
+  "INDFMPIR",
+  "BMI_value",
+  "MET_total",
+  "sedentary_min",
+  "smoke_status",
+  "Alcohol_Status",
+  "diabetes_or_prediabetes",
+  "htn_status",
+  "work_status"
+)
+
+models <- list(
+  Model1_age_sex=cov_model1,
+  Model2_full=cov_model2
+)
+
+design_vars <- c(
+  "SDMVPSU",
+  "SDMVSTRA",
+  "mec_adj"
+)
+
+categorical_vars <- c(
+  "sex",
+  "race_ethnicity",
+  "education",
+  "smoke_status",
+  "Alcohol_Status",
+  "diabetes_or_prediabetes",
+  "htn_status",
+  "work_status"
+)
+
+required_vars <- unique(c(
+  raw_rhythm,
+  all_exposures,
+  cov_model2,
+  design_vars
+))
+
+# ==============================================================================
+# 4. VARIABLE QC
+# ==============================================================================
+
+missing_qc <- map_dfr(seq_len(M),function(i){
+  miss <- setdiff(required_vars,names(MI_list[[i]]))
+  tibble(
+    MI=i,
+    missing=if(length(miss)==0) "" else paste(miss,collapse=" | ")
+  )
+})
+
+write_csv(
+  missing_qc,
+  file.path(out_dir,"Step25_variable_QC.csv")
+)
+
+if(any(missing_qc$missing!="")){
+  print(missing_qc)
+  stop("Required variables are missing in one or more MI datasets.")
+}
+
+cat("Variable QC passed.\n")
+
+# ==============================================================================
+# 5. COMMON STANDARDIZATION
+# ==============================================================================
+
+x <- MI_list[[1]][[raw_rhythm]]
+
+x_mean <- mean(x,na.rm=TRUE)
+x_sd <- sd(x,na.rm=TRUE)
+
+if(!is.finite(x_mean) || !is.finite(x_sd) || x_sd<=0)
+  stop("Invalid sleep rhythm disruption index mean/SD.")
+
+cat("Sleep rhythm index mean:",x_mean,"\n")
+cat("Sleep rhythm index SD  :",x_sd,"\n")
+
+# ==============================================================================
+# 6. DATA PREPARATION
+# ==============================================================================
+
+prepare_data <- function(dat){
+  
+  for(v in categorical_vars){
+    if(!is.factor(dat[[v]]))
+      dat[[v]] <- factor(dat[[v]])
+  }
+  
+  dat %>%
+    mutate(
+      sleep_rhythm_index_z=
+        (.data[[raw_rhythm]]-x_mean)/x_sd
+    )
+}
+
+MI_list <- lapply(MI_list,prepare_data)
+
+# ==============================================================================
+# 7. FACTOR QC
+# ==============================================================================
+
+factor_qc <- expand.grid(
+  MI=seq_len(M),
+  variable=categorical_vars,
+  stringsAsFactors=FALSE
+)
+
+factor_qc$is_factor <- mapply(
+  function(i,v) is.factor(MI_list[[i]][[v]]),
+  factor_qc$MI,
+  factor_qc$variable
+)
+
+write_csv(
+  factor_qc,
+  file.path(out_dir,"Step25_factor_QC.csv")
+)
+
+if(any(!factor_qc$is_factor)){
+  print(factor_qc %>% filter(!is_factor))
+  stop("Categorical covariate factor QC failed.")
+}
+
+cat("Factor QC passed.\n")
+
+# ==============================================================================
+# 8. BINARY EXPOSURE QC
+# ==============================================================================
+
+binary_qc <- map_dfr(all_exposures,function(v){
+  
+  vals <- sort(unique(na.omit(MI_list[[1]][[v]])))
+  
+  tibble(
+    Exposure=v,
+    Values=paste(vals,collapse=" | "),
+    Binary_01=identical(as.numeric(vals),c(0,1)),
+    Available=sum(!is.na(MI_list[[1]][[v]])),
+    Positive=sum(MI_list[[1]][[v]]==1,na.rm=TRUE)
+  )
+})
+
+print(binary_qc)
+
+write_csv(
+  binary_qc,
+  file.path(out_dir,"Step25_binary_exposure_QC.csv")
+)
+
+if(any(!binary_qc$Binary_01))
+  stop("One or more DEQ exposure variables are not strictly coded 0/1.")
+
+# ==============================================================================
+# 9. OUTCOME QC
+# ==============================================================================
+
+outcome_qc <- tibble(
+  N=sum(!is.na(MI_list[[1]][[outcome]])),
+  Mean=mean(MI_list[[1]][[outcome]],na.rm=TRUE),
+  SD=sd(MI_list[[1]][[outcome]],na.rm=TRUE),
+  Median=median(MI_list[[1]][[outcome]],na.rm=TRUE),
+  Min=min(MI_list[[1]][[outcome]],na.rm=TRUE),
+  Max=max(MI_list[[1]][[outcome]],na.rm=TRUE)
+)
+
+print(outcome_qc)
+
+write_csv(
+  outcome_qc,
+  file.path(out_dir,"Step25_sleep_rhythm_outcome_QC.csv")
+)
+
+# ==============================================================================
+# 10. SURVEY DESIGN
+# ==============================================================================
+
+design_list <- lapply(MI_list,function(dat){
+  
+  svydesign(
+    id=~SDMVPSU,
+    strata=~SDMVSTRA,
+    weights=~mec_adj,
+    nest=TRUE,
+    data=dat
+  )
+})
+
+# ==============================================================================
+# 11. MODEL FUNCTION
+# ==============================================================================
+
+run_model <- function(i,exposure,model_name,covariates){
+  
+  dat <- MI_list[[i]]
+  design <- design_list[[i]]
+  
+  available <- !is.na(dat[[exposure]]) &
+    !is.na(dat[[outcome]])
+  
+  n_available <- sum(available)
+  
+  if(n_available==0){
+    return(tibble(
+      Exposure=exposure,
+      Model=model_name,
+      MI=i,
+      N=0,
+      beta=NA_real_,
+      SE=NA_real_,
+      Status="No available observations"
+    ))
+  }
+  
+  dsub <- subset(design,available)
+  
+  formula_model <- as.formula(
+    paste(
+      outcome,
+      "~",
+      paste(c(exposure,covariates),collapse="+")
+    )
+  )
+  
+  fit <- tryCatch(
+    svyglm(
+      formula_model,
+      design=dsub,
+      family=gaussian()
+    ),
+    error=function(e) NULL
+  )
+  
+  if(is.null(fit)){
+    return(tibble(
+      Exposure=exposure,
+      Model=model_name,
+      MI=i,
+      N=n_available,
+      beta=NA_real_,
+      SE=NA_real_,
+      Status="Model failed"
+    ))
+  }
+  
+  b <- coef(fit)
+  V <- vcov(fit)
+  
+  if(!exposure %in% names(b)){
+    return(tibble(
+      Exposure=exposure,
+      Model=model_name,
+      MI=i,
+      N=n_available,
+      beta=NA_real_,
+      SE=NA_real_,
+      Status="Exposure coefficient missing"
+    ))
+  }
+  
+  tibble(
+    Exposure=exposure,
+    Model=model_name,
+    MI=i,
+    N=n_available,
+    beta=unname(b[exposure]),
+    SE=sqrt(V[exposure,exposure]),
+    Status="Success"
+  )
+}
+
+# ==============================================================================
+# 12. RUN ALL MI MODELS
+# ==============================================================================
+
+results <- map_dfr(seq_len(M),function(i){
+  
+  cat("Running MI:",i,"\n")
+  
+  map_dfr(all_exposures,function(exp_var){
+    
+    map_dfr(names(models),function(model_name){
+      
+      run_model(
+        i=i,
+        exposure=exp_var,
+        model_name=model_name,
+        covariates=models[[model_name]]
+      )
+    })
+  })
+})
+
+write_csv(
+  results,
+  file.path(out_dir,"Step25_MI_specific_results.csv")
+)
+
+# ==============================================================================
+# 13. MODEL STATUS QC
+# ==============================================================================
+
+status_qc <- results %>%
+  count(Exposure,Model,Status)
+
+print(status_qc)
+
+write_csv(
+  status_qc,
+  file.path(out_dir,"Step25_model_status_QC.csv")
+)
+
+if(any(results$Status!="Success")){
+  cat("\nWARNING: Non-successful models detected:\n")
+  print(results %>% filter(Status!="Success"))
+}
+
+# ==============================================================================
+# 14. RUBIN POOLING
+# ==============================================================================
+
+pool_scalar <- function(df){
+  
+  ok <- is.finite(df$beta) & is.finite(df$SE)
+  
+  beta <- df$beta[ok]
+  se <- df$SE[ok]
+  
+  m <- length(beta)
+  
+  if(m<2){
+    return(tibble(
+      M=m,
+      Beta=NA_real_,
+      SE=NA_real_,
+      df=NA_real_,
+      Lower95=NA_real_,
+      Upper95=NA_real_,
+      P=NA_real_
+    ))
+  }
+  
+  qbar <- mean(beta)
+  W <- mean(se^2)
+  B <- var(beta)
+  
+  T <- W+(1+1/m)*B
+  SE_pool <- sqrt(T)
+  
+  if(is.finite(B) && B>0 && is.finite(W) && W>0){
+    r <- ((1+1/m)*B)/W
+    df <- (m-1)*(1+1/r)^2
+  }else{
+    df <- Inf
+  }
+  
+  crit <- if(is.finite(df)) qt(0.975,df=df) else qnorm(0.975)
+  stat <- qbar/SE_pool
+  
+  p <- if(is.finite(df)){
+    2*pt(abs(stat),df=df,lower.tail=FALSE)
+  }else{
+    2*pnorm(abs(stat),lower.tail=FALSE)
+  }
+  
+  tibble(
+    M=m,
+    Beta=qbar,
+    SE=SE_pool,
+    df=df,
+    Lower95=qbar-crit*SE_pool,
+    Upper95=qbar+crit*SE_pool,
+    P=p
+  )
+}
+
+pooled_results <- results %>%
+  filter(Status=="Success") %>%
+  group_by(Exposure,Model) %>%
+  group_modify(~pool_scalar(.x)) %>%
+  ungroup()
+
+write_csv(
+  pooled_results,
+  file.path(out_dir,"Step25_Rubin_pooled_results.csv")
+)
+
+# ==============================================================================
+# 15. FDR ACROSS ALL 8 REPORTED TESTS
+# ==============================================================================
+
+pooled_results <- pooled_results %>%
+  mutate(
+    P_FDR=p.adjust(P,method="fdr")
+  )
+
+write_csv(
+  pooled_results,
+  file.path(out_dir,"Step25_Rubin_pooled_results_with_ALL_FDR.csv")
+)
+
+# ==============================================================================
+# 16. LABELS
+# ==============================================================================
+
+exposure_labels <- c(
+  shade_avoidance="Frequent shade seeking",
+  long_sleeve_behavior="Frequent long-sleeved clothing use",
+  sunscreen_behavior="Frequent sunscreen use",
+  shade_avoidance_sensitivity=
+    "Frequent shade seeking (sensitivity definition)"
+)
+
+model_labels <- c(
+  Model1_age_sex="Model 1",
+  Model2_full="Model 2"
+)
+
+behavior_order <- c(
+  "Frequent shade seeking",
+  "Frequent long-sleeved clothing use",
+  "Frequent sunscreen use",
+  "Frequent shade seeking (sensitivity definition)"
+)
+
+# ==============================================================================
+# 17. FINAL PUBLICATION TABLE
+# ==============================================================================
+
+final_publication_table <- pooled_results %>%
+  mutate(
+    Behavior=recode(Exposure,!!!exposure_labels),
+    Model_label=recode(Model,!!!model_labels),
+    
+    Beta_95CI=sprintf(
+      "%.3f (%.3f to %.3f)",
+      Beta,
+      Lower95,
+      Upper95
+    ),
+    
+    P_raw_fmt=case_when(
+      is.na(P) ~ "—",
+      P<0.001 ~ "<0.001",
+      TRUE ~ sprintf("%.3f",P)
+    ),
+    
+    P_FDR_fmt=case_when(
+      is.na(P_FDR) ~ "—",
+      P_FDR<0.001 ~ "<0.001",
+      TRUE ~ sprintf("%.3f",P_FDR)
+    ),
+    
+    Behavior=factor(
+      Behavior,
+      levels=behavior_order
+    ),
+    
+    Model_label=factor(
+      Model_label,
+      levels=c("Model 1","Model 2")
+    )
+  ) %>%
+  
+  arrange(
+    Behavior,
+    Model_label
+  ) %>%
+  
+  select(
+    Behavior,
+    Model=Model_label,
+    M,
+    Beta,
+    Lower_95CI=Lower95,
+    Upper_95CI=Upper95,
+    `Beta (95% CI)`=Beta_95CI,
+    `P value`=P_raw_fmt,
+    P_FDR_numeric=P_FDR,
+    `FDR-adjusted P`=P_FDR_fmt
+  ) %>%
+  
+  mutate(
+    Behavior=as.character(Behavior),
+    Model=as.character(Model)
+  )
+
+write_csv(
+  final_publication_table,
+  file.path(out_dir,"Step25_publication_results_ALL_FDR_FINAL.csv")
+)
+
+# ==============================================================================
+# 18. PRIMARY MODEL 2 TABLE
+# ==============================================================================
+
+primary_model2_table <- final_publication_table %>%
+  filter(
+    Model=="Model 2",
+    Behavior %in% c(
+      "Frequent shade seeking",
+      "Frequent long-sleeved clothing use",
+      "Frequent sunscreen use"
+    )
+  ) %>%
+  select(
+    Behavior,
+    `Beta (95% CI)`,
+    `P value`,
+    `FDR-adjusted P`
+  )
+
+write_csv(
+  primary_model2_table,
+  file.path(
+    out_dir,
+    "Step25_Model2_primary_behaviors_ALL_FDR_FINAL.csv"
+  )
+)
+
+# ==============================================================================
+# 19. SHADE SENSITIVITY TABLE
+# ==============================================================================
+
+shade_sensitivity_table <- final_publication_table %>%
+  filter(
+    Behavior %in% c(
+      "Frequent shade seeking",
+      "Frequent shade seeking (sensitivity definition)"
+    )
+  ) %>%
+  select(
+    Behavior,
+    Model,
+    `Beta (95% CI)`,
+    `P value`,
+    `FDR-adjusted P`
+  )
+
+write_csv(
+  shade_sensitivity_table,
+  file.path(
+    out_dir,
+    "Step25_shade_sensitivity_ALL_FDR_FINAL.csv"
+  )
+)
+
+# ==============================================================================
+# 20. FINAL QC
+# ==============================================================================
+
+final_qc <- tibble(
+  Item=c(
+    "MI datasets",
+    "N per MI",
+    "Outcome",
+    "Outcome scale",
+    "Model 1",
+    "Model 2",
+    "Survey weight",
+    "PSU",
+    "Strata",
+    "Survey subset approach",
+    "Pooling",
+    "FDR family"
+  ),
+  Value=c(
+    M,
+    nrow(MI_list[[1]]),
+    outcome,
+    "Standardized sleep rhythm disruption index",
+    "Age + sex",
+    "Same covariates as STEP19 fully adjusted Model 4",
+    "mec_adj",
+    "SDMVPSU",
+    "SDMVSTRA",
+    "Full design followed by DEQ subpopulation subset",
+    "Rubin rules with finite-df t inference",
+    "All 8 reported exposure-model tests"
+  )
+)
+
+write_csv(
+  final_qc,
+  file.path(out_dir,"Step25_FINAL_QC_ALL_FDR.csv")
+)
+
+# ==============================================================================
+# 21. TABLE NOTE
+# ==============================================================================
+
+table_note <- paste(
+  "Beta coefficients represent differences in the standardized sleep rhythm",
+  "disruption index (SD units) comparing frequent with less frequent",
+  "sun-protective behavior. Benjamini-Hochberg false-discovery rate",
+  "correction was applied across all eight reported exposure-model tests."
+)
+
+writeLines(
+  table_note,
+  file.path(out_dir,"Step25_publication_table_note_ALL_FDR.txt")
+)
+
+# ==============================================================================
+# 22. FINAL OUTPUT
+# ==============================================================================
+
+cat("\n============================================================\n")
+cat("STEP25 DEQ BEHAVIOR-SLEEP RHYTHM ANALYSIS COMPLETE\n")
+cat("============================================================\n")
+cat("MI datasets :",M,"\n")
+cat("Outcome     :",outcome,"\n")
+cat("Model 1     : Age + sex\n")
+cat("Model 2     : Same covariates as STEP19 fully adjusted model\n")
+cat("Pooling     : Rubin rules with finite-df t inference\n")
+cat("FDR         : BH correction across all 8 reported tests\n")
+cat("Output      :",out_dir,"\n")
+cat("============================================================\n\n")
+
+print(
+  final_publication_table %>%
+    select(
+      Behavior,
+      Model,
+      `Beta (95% CI)`,
+      `P value`,
+      `FDR-adjusted P`
+    ),
+  n=Inf
+)
+
+################################################################################
+# STEP26 FINAL
+# NHANES Daytime Outdoor Time Engineering
+#
+# Purpose:
+#   Construct self-reported daytime outdoor-time variables as exploratory
+#   proxies of environmental light exposure.
+#
+# Source:
+#   NHANES 2017-March 2020 pre-pandemic P_DEQ
+#
+# Primary exploratory exposures:
+#   DED120: minutes outdoors 09:00-17:00 on work/school days
+#   DED125: minutes outdoors 09:00-17:00 on non-work/non-school days
+#
+# Secondary descriptive variable:
+#   simple mean of DED120 and DED125 when both are available
+#
+# Special codes:
+#   3333 = structurally not applicable
+#   7777/9999 = refused/don't know -> missing
+#
+# Output:
+#   D:/code/Outdoor_light.data.rds
+################################################################################
+
+rm(list=ls()); gc()
+
+library(nhanesA)
+library(tidyverse)
+
+# ==============================================================================
+# 1. PATHS
+# ==============================================================================
+
+base_path <- "D:/code"
+qc_dir <- file.path(base_path,"qc_outputs")
+
+dir.create(qc_dir,recursive=TRUE,showWarnings=FALSE)
+
+output_file <- file.path(base_path,"Outdoor_light.data.rds")
+
+# ==============================================================================
+# 2. DOWNLOAD P_DEQ
+# ==============================================================================
+
+raw <- nhanes("P_DEQ")
+
+vars <- c("SEQN","DED120","DED125")
+missing_vars <- setdiff(vars,names(raw))
+
+if(length(missing_vars)>0)
+  stop("Missing variables: ",paste(missing_vars,collapse=", "))
+
+cat("P_DEQ rows:",nrow(raw),"\n")
+
+# ==============================================================================
+# 3. HELPERS
+# ==============================================================================
+
+clean_outdoor <- function(x){
+  x_num <- suppressWarnings(as.numeric(x))
+  
+  case_when(
+    x_num>=0 & x_num<=480 ~ x_num,
+    x_num %in% c(3333,7777,9999) ~ NA_real_,
+    TRUE ~ NA_real_
+  )
+}
+
+special_code <- function(x){
+  x_num <- suppressWarnings(as.numeric(x))
+  
+  case_when(
+    x_num==3333 ~ "Structurally not applicable",
+    x_num==7777 ~ "Refused",
+    x_num==9999 ~ "Don't know",
+    x_num>=0 & x_num<=480 ~ "Valid quantitative value",
+    TRUE ~ "Other/invalid"
+  )
+}
+
+# ==============================================================================
+# 4. ENGINEERING
+# ==============================================================================
+
+Outdoor <- raw %>%
+  select(all_of(vars)) %>%
+  mutate(
+    SEQN=as.numeric(SEQN),
+    
+    DED120_raw=DED120,
+    DED125_raw=DED125,
+    
+    DED120_status=special_code(DED120_raw),
+    DED125_status=special_code(DED125_raw),
+    
+    outdoor_workday_min=clean_outdoor(DED120_raw),
+    outdoor_nonworkday_min=clean_outdoor(DED125_raw),
+    
+    # Secondary descriptive summary only:
+    # simple arithmetic mean, not intended as the primary exposure
+    mean_outdoor_light_min=case_when(
+      !is.na(outdoor_workday_min) &
+        !is.na(outdoor_nonworkday_min) ~
+        (outdoor_workday_min+outdoor_nonworkday_min)/2,
+      TRUE ~ NA_real_
+    )
+  )
+
+# ==============================================================================
+# 5. BASIC QC
+# ==============================================================================
+
+sample_QC <- Outdoor %>%
+  summarise(
+    N=n(),
+    workday_available=sum(!is.na(outdoor_workday_min)),
+    nonworkday_available=sum(!is.na(outdoor_nonworkday_min)),
+    both_available=sum(
+      !is.na(outdoor_workday_min) &
+        !is.na(outdoor_nonworkday_min)
+    ),
+    mean_available=sum(!is.na(mean_outdoor_light_min))
+  )
+
+cat("\nSample availability:\n")
+print(sample_QC)
+
+# ==============================================================================
+# 6. STRUCTURAL / SPECIAL-CODE QC
+# ==============================================================================
+
+special_code_QC <- bind_rows(
+  Outdoor %>%
+    count(Status=DED120_status,name="N") %>%
+    mutate(Variable="DED120"),
+  Outdoor %>%
+    count(Status=DED125_status,name="N") %>%
+    mutate(Variable="DED125")
+) %>%
+  select(Variable,Status,N) %>%
+  arrange(Variable,Status)
+
+cat("\nSpecial-code QC:\n")
+print(special_code_QC)
+
+structural_QC <- Outdoor %>%
+  summarise(
+    N=n(),
+    
+    DED120_structural=
+      sum(DED120_status=="Structurally not applicable",na.rm=TRUE),
+    
+    DED125_structural=
+      sum(DED125_status=="Structurally not applicable",na.rm=TRUE),
+    
+    DED120_refused=
+      sum(DED120_status=="Refused",na.rm=TRUE),
+    
+    DED125_refused=
+      sum(DED125_status=="Refused",na.rm=TRUE),
+    
+    DED120_dontknow=
+      sum(DED120_status=="Don't know",na.rm=TRUE),
+    
+    DED125_dontknow=
+      sum(DED125_status=="Don't know",na.rm=TRUE)
+  )
+
+cat("\nStructural/special missingness:\n")
+print(structural_QC)
+
+# ==============================================================================
+# 7. ANALYTIC MISSINGNESS QC
+# ==============================================================================
+
+missing_QC <- Outdoor %>%
+  summarise(
+    N=n(),
+    missing_workday=sum(is.na(outdoor_workday_min)),
+    missing_nonworkday=sum(is.na(outdoor_nonworkday_min)),
+    missing_mean=sum(is.na(mean_outdoor_light_min))
+  )
+
+cat("\nAnalytic missingness:\n")
+print(missing_QC)
+
+# ==============================================================================
+# 8. DISTRIBUTION QC
+# ==============================================================================
+
+distribution_QC <- Outdoor %>%
+  summarise(
+    workday_N=sum(!is.na(outdoor_workday_min)),
+    workday_mean=mean(outdoor_workday_min,na.rm=TRUE),
+    workday_SD=sd(outdoor_workday_min,na.rm=TRUE),
+    workday_median=median(outdoor_workday_min,na.rm=TRUE),
+    workday_P25=quantile(outdoor_workday_min,0.25,na.rm=TRUE),
+    workday_P75=quantile(outdoor_workday_min,0.75,na.rm=TRUE),
+    workday_min=min(outdoor_workday_min,na.rm=TRUE),
+    workday_max=max(outdoor_workday_min,na.rm=TRUE),
+    
+    nonworkday_N=sum(!is.na(outdoor_nonworkday_min)),
+    nonworkday_mean=mean(outdoor_nonworkday_min,na.rm=TRUE),
+    nonworkday_SD=sd(outdoor_nonworkday_min,na.rm=TRUE),
+    nonworkday_median=median(outdoor_nonworkday_min,na.rm=TRUE),
+    nonworkday_P25=quantile(outdoor_nonworkday_min,0.25,na.rm=TRUE),
+    nonworkday_P75=quantile(outdoor_nonworkday_min,0.75,na.rm=TRUE),
+    nonworkday_min=min(outdoor_nonworkday_min,na.rm=TRUE),
+    nonworkday_max=max(outdoor_nonworkday_min,na.rm=TRUE),
+    
+    mean_N=sum(!is.na(mean_outdoor_light_min)),
+    mean_mean=mean(mean_outdoor_light_min,na.rm=TRUE),
+    mean_SD=sd(mean_outdoor_light_min,na.rm=TRUE),
+    mean_median=median(mean_outdoor_light_min,na.rm=TRUE),
+    mean_P25=quantile(mean_outdoor_light_min,0.25,na.rm=TRUE),
+    mean_P75=quantile(mean_outdoor_light_min,0.75,na.rm=TRUE)
+  )
+
+cat("\nDistribution QC:\n")
+print(distribution_QC)
+
+# ==============================================================================
+# 9. ZERO / EXTREME VALUE QC
+# ==============================================================================
+
+range_QC <- Outdoor %>%
+  summarise(
+    workday_zero=sum(outdoor_workday_min==0,na.rm=TRUE),
+    workday_480=sum(outdoor_workday_min==480,na.rm=TRUE),
+    nonworkday_zero=sum(outdoor_nonworkday_min==0,na.rm=TRUE),
+    nonworkday_480=sum(outdoor_nonworkday_min==480,na.rm=TRUE)
+  )
+
+cat("\nBoundary-value QC:\n")
+print(range_QC)
+
+# ==============================================================================
+# 10. DUPLICATE SEQN QC
+# ==============================================================================
+
+duplicate_QC <- tibble(
+  N=nrow(Outdoor),
+  unique_SEQN=n_distinct(Outdoor$SEQN),
+  duplicated_SEQN=sum(duplicated(Outdoor$SEQN))
+)
+
+print(duplicate_QC)
+
+if(duplicate_QC$duplicated_SEQN>0)
+  stop("Duplicated SEQN detected in P_DEQ.")
+
+# ==============================================================================
+# 11. PRIMARY / SECONDARY EXPOSURE DEFINITIONS
+# ==============================================================================
+
+exposure_definition_QC <- tibble(
+  Variable=c(
+    "outdoor_workday_min",
+    "outdoor_nonworkday_min",
+    "mean_outdoor_light_min"
+  ),
+  Role=c(
+    "Primary exploratory exposure",
+    "Primary exploratory exposure",
+    "Secondary descriptive/exploratory summary"
+  ),
+  Interpretation=c(
+    "Minutes outdoors 09:00-17:00 on work/school days",
+    "Minutes outdoors 09:00-17:00 on non-work/non-school days",
+    "Simple arithmetic mean when both day-type measures are available"
+  )
+)
+
+print(exposure_definition_QC)
+
+# ==============================================================================
+# 12. SAVE QC FILES
+# ==============================================================================
+
+write_csv(
+  sample_QC,
+  file.path(qc_dir,"Step26_outdoor_availability_QC.csv")
+)
+
+write_csv(
+  special_code_QC,
+  file.path(qc_dir,"Step26_outdoor_special_codes_QC.csv")
+)
+
+write_csv(
+  structural_QC,
+  file.path(qc_dir,"Step26_outdoor_structural_missingness_QC.csv")
+)
+
+write_csv(
+  missing_QC,
+  file.path(qc_dir,"Step26_outdoor_missingness_QC.csv")
+)
+
+write_csv(
+  distribution_QC,
+  file.path(qc_dir,"Step26_outdoor_distribution_QC.csv")
+)
+
+write_csv(
+  range_QC,
+  file.path(qc_dir,"Step26_outdoor_boundary_QC.csv")
+)
+
+write_csv(
+  duplicate_QC,
+  file.path(qc_dir,"Step26_outdoor_duplicate_SEQN_QC.csv")
+)
+
+write_csv(
+  exposure_definition_QC,
+  file.path(qc_dir,"Step26_outdoor_exposure_definition_QC.csv")
+)
+
+# ==============================================================================
+# 13. EXPORT
+# ==============================================================================
+
+saveRDS(
+  Outdoor,
+  output_file
+)
+
+cat("\n============================================================\n")
+cat("STEP26 OUTDOOR-TIME ENGINEERING COMPLETE\n")
+cat("============================================================\n")
+cat("Primary exposure 1 : outdoor_workday_min\n")
+cat("Primary exposure 2 : outdoor_nonworkday_min\n")
+cat("Secondary summary  : mean_outdoor_light_min\n")
+cat("3333               : structurally not applicable -> NA\n")
+cat("7777/9999           : refused/don't know -> NA\n")
+cat("Saved               :",output_file,"\n")
+cat("============================================================\n")
+
+################################################################################
+# STEP27 FINAL
+# NHANES Daytime Outdoor Time and Sleep Rhythm Disruption
+#
+# Cycle:
+#   NHANES 2017-March 2020 pre-pandemic ONLY
+#
+# Primary exposures:
+#   outdoor_workday_h
+#   outdoor_nonworkday_h
+#
+# Secondary exposure:
+#   mean_outdoor_light_h
+#
+# Outcome:
+#   sleep_rhythm_index_z
+#
+# Model 1:
+#   age + sex
+#
+# Model 2:
+#   same covariates as STEP19 fully adjusted Model 4
+#
+# Survey:
+#   Original 2017-March 2020 MEC weight: WTMECPRP
+#
+# Analysis:
+#   20 MI datasets + survey-weighted linear regression
+#   Rubin finite-df pooling
+#   BH-FDR across all 6 reported tests
+################################################################################
+
+rm(list=ls()); gc()
+
+library(tidyverse)
+library(survey)
+
+options(survey.lonely.psu="adjust")
+
+# ==============================================================================
+# 1. PATHS
+# ==============================================================================
+
+root_dir <- "D:/code"
+
+MI_file <- file.path(
+  root_dir,
+  "19.MI_sleep_rhythm_DEQ_behavior_analysis_list_FINAL.rds"
+)
+
+Outdoor_file <- file.path(
+  root_dir,
+  "Outdoor_light.data.rds"
+)
+
+Demo_file <- file.path(
+  root_dir,
+  "1.data.rds"
+)
+
+out_dir <- file.path(
+  root_dir,
+  "Step27_Outdoor_time_sleep_rhythm_FINAL"
+)
+
+dir.create(out_dir,recursive=TRUE,showWarnings=FALSE)
+
+for(f in c(MI_file,Outdoor_file,Demo_file)){
+  if(!file.exists(f)) stop("Cannot find file: ",f)
+}
+
+# ==============================================================================
+# 2. LOAD
+# ==============================================================================
+
+MI_list <- readRDS(MI_file)
+Outdoor <- readRDS(Outdoor_file)
+Demo <- readRDS(Demo_file)
+
+if(!is.list(MI_list) || length(MI_list)<2)
+  stop("MI_file must contain a list of multiply imputed datasets.")
+
+M <- length(MI_list)
+
+cat("MI datasets:",M,"\n")
+cat("Full MI N:",nrow(MI_list[[1]]),"\n")
+cat("Outdoor N:",nrow(Outdoor),"\n")
+cat("Demographic N:",nrow(Demo),"\n")
+
+# ==============================================================================
+# 3. OUTDOOR VARIABLES
+# ==============================================================================
+
+outdoor_required <- c(
+  "SEQN",
+  "outdoor_workday_min",
+  "outdoor_nonworkday_min",
+  "mean_outdoor_light_min"
+)
+
+miss <- setdiff(outdoor_required,names(Outdoor))
+
+if(length(miss)>0)
+  stop("Missing Outdoor variables: ",paste(miss,collapse=", "))
+
+Outdoor <- Outdoor %>%
+  transmute(
+    SEQN=as.numeric(SEQN),
+    outdoor_workday_h=outdoor_workday_min/60,
+    outdoor_nonworkday_h=outdoor_nonworkday_min/60,
+    mean_outdoor_light_h=mean_outdoor_light_min/60
+  )
+
+if(anyDuplicated(Outdoor$SEQN)>0)
+  stop("Duplicated SEQN detected in Outdoor dataset.")
+
+# ==============================================================================
+# 4. ORIGINAL 2017-2020 SURVEY INFORMATION
+# ==============================================================================
+
+demo_required <- c(
+  "SEQN","CYCLE","WTMECPRP","SDMVPSU","SDMVSTRA"
+)
+
+miss <- setdiff(demo_required,names(Demo))
+
+if(length(miss)>0){
+  stop(
+    "Required original survey variables missing from 1.data.rds: ",
+    paste(miss,collapse=", ")
+  )
+}
+
+demo_1720 <- Demo %>%
+  mutate(SEQN=as.numeric(SEQN)) %>%
+  filter(CYCLE=="2017-2020") %>%
+  transmute(
+    SEQN,
+    cycle_1720=CYCLE,
+    WTMECPRP_original=as.numeric(WTMECPRP),
+    PSU_1720=as.numeric(SDMVPSU),
+    STRATA_1720=as.numeric(SDMVSTRA)
+  )
+
+if(nrow(demo_1720)==0)
+  stop("No 2017-2020 participants found in 1.data.rds.")
+
+if(anyDuplicated(demo_1720$SEQN)>0)
+  stop("Duplicated SEQN detected in 2017-2020 demographic data.")
+
+# IMPORTANT:
+# Missing MEC weights are allowed in the full demographic frame.
+# Validity is checked AFTER restriction to the actual STEP27 analytic cohort.
+
+demo_weight_qc <- demo_1720 %>%
+  summarise(
+    N=n(),
+    weight_available=sum(!is.na(WTMECPRP_original)),
+    weight_positive=sum(
+      !is.na(WTMECPRP_original) &
+        WTMECPRP_original>0
+    ),
+    weight_missing=sum(is.na(WTMECPRP_original)),
+    weight_nonpositive=sum(
+      !is.na(WTMECPRP_original) &
+        WTMECPRP_original<=0
+    )
+  )
+
+cat("\n2017-2020 demographic weight QC:\n")
+print(demo_weight_qc)
+
+write_csv(
+  demo_weight_qc,
+  file.path(out_dir,"Step27_demographic_weight_QC.csv")
+)
+
+weight_source <- "Original 2017-March 2020 WTMECPRP from 1.data.rds"
+
+cat("2017-2020 demographic N:",nrow(demo_1720),"\n")
+cat("Weight source:",weight_source,"\n")
+
+# ==============================================================================
+# 5. VARIABLES
+# ==============================================================================
+
+primary_exposures <- c(
+  "outdoor_workday_h",
+  "outdoor_nonworkday_h"
+)
+
+secondary_exposure <- "mean_outdoor_light_h"
+
+all_exposures <- c(
+  primary_exposures,
+  secondary_exposure
+)
+
+outcome <- "sleep_rhythm_index_z"
+
+cov_model1 <- c(
+  "RIDAGEYR",
+  "sex"
+)
+
+cov_model2 <- c(
+  "RIDAGEYR",
+  "sex",
+  "race_ethnicity",
+  "education",
+  "INDFMPIR",
+  "BMI_value",
+  "MET_total",
+  "sedentary_min",
+  "smoke_status",
+  "Alcohol_Status",
+  "diabetes_or_prediabetes",
+  "htn_status",
+  "work_status"
+)
+
+models <- list(
+  Model1_age_sex=cov_model1,
+  Model2_full=cov_model2
+)
+
+factor_vars <- c(
+  "sex",
+  "race_ethnicity",
+  "education",
+  "smoke_status",
+  "Alcohol_Status",
+  "diabetes_or_prediabetes",
+  "htn_status",
+  "work_status"
+)
+# ==============================================================================
+# 6. PREPARE EACH MI DATASET
+# ==============================================================================
+
+prepare_MI <- function(dat){
+  
+  if(!"SEQN" %in% names(dat))
+    stop("SEQN missing from MI dataset.")
+  
+  dat$SEQN <- as.numeric(dat$SEQN)
+  
+  n_full <- nrow(dat)
+  
+  # Attach original 2017-2020 survey information
+  dat <- dat %>%
+    left_join(
+      demo_1720,
+      by="SEQN"
+    )
+  
+  if(nrow(dat)!=n_full)
+    stop("Demographic merge changed MI sample size.")
+  
+  # Restrict to actual 2017-March 2020 participants
+  dat <- dat %>%
+    filter(!is.na(cycle_1720))
+  
+  if(nrow(dat)==0)
+    stop("No 2017-2020 participants remained after demographic merge.")
+  
+  # Now require valid original MEC weights in the actual analytic-cycle cohort
+  bad_weight <- is.na(dat$WTMECPRP_original) |
+    dat$WTMECPRP_original<=0
+  
+  if(any(bad_weight)){
+    stop(
+      "Missing/non-positive WTMECPRP detected in STEP27 analytic-cycle cohort: ",
+      sum(bad_weight)
+    )
+  }
+  
+  # Survey design identifiers must also be valid
+  bad_design <- is.na(dat$PSU_1720) |
+    is.na(dat$STRATA_1720)
+  
+  if(any(bad_design)){
+    stop(
+      "Missing PSU/strata detected in STEP27 analytic-cycle cohort: ",
+      sum(bad_design)
+    )
+  }
+  
+  # Attach outdoor variables
+  n_before <- nrow(dat)
+  
+  dat <- dat %>%
+    left_join(
+      Outdoor,
+      by="SEQN"
+    )
+  
+  if(nrow(dat)!=n_before)
+    stop("Outdoor merge changed sample size.")
+  
+  required <- unique(c(
+    "SEQN",
+    outcome,
+    cov_model2,
+    "WTMECPRP_original",
+    "PSU_1720",
+    "STRATA_1720"
+  ))
+  
+  miss <- setdiff(required,names(dat))
+  
+  if(length(miss)>0)
+    stop(
+      "Missing analytic variables: ",
+      paste(miss,collapse=", ")
+    )
+  
+  for(v in factor_vars){
+    if(!is.factor(dat[[v]]))
+      dat[[v]] <- factor(dat[[v]])
+  }
+  
+  dat
+}
+
+MI_1720 <- lapply(
+  MI_list,
+  prepare_MI
+)
+
+cat(
+  "\n2017-2020 analytic-cycle N per MI:",
+  nrow(MI_1720[[1]]),
+  "\n"
+)
+# ==============================================================================
+# 7. FACTOR QC
+# ==============================================================================
+
+factor_qc <- expand.grid(
+  MI=seq_len(M),
+  Variable=factor_vars,
+  stringsAsFactors=FALSE
+)
+
+factor_qc$Is_factor <- mapply(
+  function(i,v) is.factor(MI_1720[[i]][[v]]),
+  factor_qc$MI,
+  factor_qc$Variable
+)
+
+write_csv(
+  factor_qc,
+  file.path(out_dir,"Step27_factor_QC.csv")
+)
+
+if(any(!factor_qc$Is_factor))
+  stop("Factor QC failed.")
+
+cat("Factor QC passed.\n")
+
+# ==============================================================================
+# 8. SURVEY WEIGHT QC
+# ==============================================================================
+
+weight_qc <- map_dfr(seq_len(M),function(i){
+  
+  dat <- MI_1720[[i]]
+  
+  tibble(
+    MI=i,
+    N=nrow(dat),
+    Weight_available=sum(!is.na(dat$WTMECPRP_original)),
+    Weight_positive=sum(
+      !is.na(dat$WTMECPRP_original) &
+        dat$WTMECPRP_original>0
+    ),
+    Mean=mean(dat$WTMECPRP_original,na.rm=TRUE),
+    Min=min(dat$WTMECPRP_original,na.rm=TRUE),
+    Max=max(dat$WTMECPRP_original,na.rm=TRUE)
+  )
+})
+
+print(weight_qc)
+
+write_csv(
+  weight_qc,
+  file.path(out_dir,"Step27_original_weight_QC.csv")
+)
+
+if(any(
+  weight_qc$Weight_available!=weight_qc$N |
+  weight_qc$Weight_positive!=weight_qc$N
+)){
+  stop("Survey weight QC failed.")
+}
+
+# Optional audit against old 5.2-y combined weight
+if("mec_adj" %in% names(MI_1720[[1]])){
+  
+  weight_identity_qc <- MI_1720[[1]] %>%
+    summarise(
+      N=n(),
+      max_abs_difference=max(
+        abs(
+          WTMECPRP_original -
+            mec_adj*(5.2/3.2)
+        ),
+        na.rm=TRUE
+      ),
+      mean_abs_difference=mean(
+        abs(
+          WTMECPRP_original -
+            mec_adj*(5.2/3.2)
+        ),
+        na.rm=TRUE
+      )
+    )
+  
+  print(weight_identity_qc)
+  
+  write_csv(
+    weight_identity_qc,
+    file.path(out_dir,"Step27_weight_identity_QC.csv")
+  )
+}
+
+# ==============================================================================
+# 9. EXPOSURE / OUTCOME QC
+# ==============================================================================
+
+exposure_qc <- map_dfr(all_exposures,function(v){
+  
+  x <- MI_1720[[1]][[v]]
+  
+  tibble(
+    Exposure=v,
+    Role=ifelse(v %in% primary_exposures,"Primary","Secondary"),
+    N=sum(!is.na(x)),
+    Mean=mean(x,na.rm=TRUE),
+    SD=sd(x,na.rm=TRUE),
+    Median=median(x,na.rm=TRUE),
+    P25=quantile(x,0.25,na.rm=TRUE),
+    P75=quantile(x,0.75,na.rm=TRUE),
+    Min=min(x,na.rm=TRUE),
+    Max=max(x,na.rm=TRUE)
+  )
+})
+
+print(exposure_qc)
+
+write_csv(
+  exposure_qc,
+  file.path(out_dir,"Step27_exposure_QC_hours.csv")
+)
+
+outcome_qc <- map_dfr(seq_len(M),function(i){
+  
+  x <- MI_1720[[i]][[outcome]]
+  
+  tibble(
+    MI=i,
+    N=sum(!is.na(x)),
+    Mean=mean(x,na.rm=TRUE),
+    SD=sd(x,na.rm=TRUE),
+    Median=median(x,na.rm=TRUE)
+  )
+})
+
+write_csv(
+  outcome_qc,
+  file.path(out_dir,"Step27_outcome_QC.csv")
+)
+
+# ==============================================================================
+# 10. SURVEY DESIGNS
+# ==============================================================================
+
+# Build design on the entire 2017-2020 analytic-cycle sample first;
+# exposure-specific availability is handled using survey::subset().
+
+design_list <- lapply(
+  MI_1720,
+  function(dat){
+    
+    svydesign(
+      id=~PSU_1720,
+      strata=~STRATA_1720,
+      weights=~WTMECPRP_original,
+      nest=TRUE,
+      data=dat
+    )
+  }
+)
+
+# ==============================================================================
+# 11. MODEL FUNCTION
+# ==============================================================================
+
+run_model <- function(i,exposure,model_name,covariates){
+  
+  dat <- MI_1720[[i]]
+  design <- design_list[[i]]
+  
+  available <-
+    !is.na(dat[[exposure]]) &
+    !is.na(dat[[outcome]])
+  
+  N_analysis <- sum(available)
+  
+  if(N_analysis==0){
+    
+    return(
+      tibble(
+        MI=i,Exposure=exposure,Model=model_name,N=0,
+        Beta=NA_real_,SE=NA_real_,Status="No observations"
+      )
+    )
+  }
+  
+  dsub <- subset(
+    design,
+    available
+  )
+  
+  f <- as.formula(
+    paste(
+      outcome,
+      "~",
+      paste(
+        c(exposure,covariates),
+        collapse="+"
+      )
+    )
+  )
+  
+  fit <- tryCatch(
+    svyglm(
+      f,
+      design=dsub,
+      family=gaussian()
+    ),
+    error=function(e) NULL
+  )
+  
+  if(is.null(fit)){
+    
+    return(
+      tibble(
+        MI=i,Exposure=exposure,Model=model_name,N=N_analysis,
+        Beta=NA_real_,SE=NA_real_,Status="Model failed"
+      )
+    )
+  }
+  
+  b <- coef(fit)
+  V <- vcov(fit)
+  
+  if(!exposure %in% names(b)){
+    
+    return(
+      tibble(
+        MI=i,Exposure=exposure,Model=model_name,N=N_analysis,
+        Beta=NA_real_,SE=NA_real_,
+        Status="Exposure coefficient missing"
+      )
+    )
+  }
+  
+  tibble(
+    MI=i,
+    Exposure=exposure,
+    Model=model_name,
+    N=N_analysis,
+    Beta=unname(b[exposure]),
+    SE=sqrt(V[exposure,exposure]),
+    Status="Success"
+  )
+}
+
+# ==============================================================================
+# 12. RUN ALL MODELS
+# ==============================================================================
+
+results <- map_dfr(seq_len(M),function(i){
+  
+  cat("Running MI:",i,"\n")
+  
+  map_dfr(all_exposures,function(exp_var){
+    
+    map_dfr(names(models),function(model_name){
+      
+      run_model(
+        i=i,
+        exposure=exp_var,
+        model_name=model_name,
+        covariates=models[[model_name]]
+      )
+    })
+  })
+})
+
+write_csv(
+  results,
+  file.path(out_dir,"Step27_MI_specific_results.csv")
+)
+
+# ==============================================================================
+# 13. MODEL QC
+# ==============================================================================
+
+model_qc <- results %>%
+  count(
+    Exposure,
+    Model,
+    Status
+  )
+
+print(model_qc)
+
+write_csv(
+  model_qc,
+  file.path(out_dir,"Step27_model_status_QC.csv")
+)
+
+if(any(results$Status!="Success")){
+  print(results %>% filter(Status!="Success"))
+  stop("One or more STEP27 models failed.")
+}
+
+# ==============================================================================
+# 14. RUBIN POOLING
+# ==============================================================================
+
+pool_scalar <- function(df){
+  
+  ok <- is.finite(df$Beta) & is.finite(df$SE)
+  
+  beta <- df$Beta[ok]
+  se <- df$SE[ok]
+  
+  m <- length(beta)
+  
+  if(m<2)
+    return(
+      tibble(
+        M=m,Beta=NA_real_,SE=NA_real_,df=NA_real_,
+        Lower95=NA_real_,Upper95=NA_real_,P=NA_real_
+      )
+    )
+  
+  qbar <- mean(beta)
+  W <- mean(se^2)
+  B <- var(beta)
+  
+  T <- W+(1+1/m)*B
+  SE_pool <- sqrt(T)
+  
+  if(is.finite(B) && B>0 && is.finite(W) && W>0){
+    
+    r <- ((1+1/m)*B)/W
+    df <- (m-1)*(1+1/r)^2
+    
+  }else{
+    
+    df <- Inf
+  }
+  
+  crit <- if(is.finite(df))
+    qt(0.975,df=df) else qnorm(0.975)
+  
+  stat <- qbar/SE_pool
+  
+  p <- if(is.finite(df))
+    2*pt(abs(stat),df=df,lower.tail=FALSE)
+  else
+    2*pnorm(abs(stat),lower.tail=FALSE)
+  
+  tibble(
+    M=m,
+    Beta=qbar,
+    SE=SE_pool,
+    df=df,
+    Lower95=qbar-crit*SE_pool,
+    Upper95=qbar+crit*SE_pool,
+    P=p
+  )
+}
+
+pooled_results <- results %>%
+  filter(Status=="Success") %>%
+  group_by(
+    Exposure,
+    Model
+  ) %>%
+  group_modify(~pool_scalar(.x)) %>%
+  ungroup()
+
+# ==============================================================================
+# 15. BH-FDR — ALL 6 REPORTED TESTS
+# ==============================================================================
+
+pooled_results <- pooled_results %>%
+  mutate(
+    P_FDR=p.adjust(
+      P,
+      method="BH"
+    )
+  )
+
+write_csv(
+  pooled_results,
+  file.path(
+    out_dir,
+    "Step27_Rubin_pooled_results_with_FDR.csv"
+  )
+)
+
+# ==============================================================================
+# 16. PUBLICATION TABLE
+# ==============================================================================
+
+exposure_labels <- c(
+  outdoor_workday_h=
+    "Work/school-day outdoor time",
+  outdoor_nonworkday_h=
+    "Non-work/non-school-day outdoor time",
+  mean_outdoor_light_h=
+    "Mean daytime outdoor time (secondary)"
+)
+
+model_labels <- c(
+  Model1_age_sex="Model 1",
+  Model2_full="Model 2"
+)
+
+exposure_order <- c(
+  "Work/school-day outdoor time",
+  "Non-work/non-school-day outdoor time",
+  "Mean daytime outdoor time (secondary)"
+)
+
+publication_table <- pooled_results %>%
+  mutate(
+    Exposure_label=recode(
+      Exposure,
+      !!!exposure_labels
+    ),
+    
+    Model_label=recode(
+      Model,
+      !!!model_labels
+    ),
+    
+    Exposure_label=factor(
+      Exposure_label,
+      levels=exposure_order
+    ),
+    
+    Model_label=factor(
+      Model_label,
+      levels=c("Model 1","Model 2")
+    ),
+    
+    Beta_95CI=sprintf(
+      "%.3f (%.3f to %.3f)",
+      Beta,
+      Lower95,
+      Upper95
+    ),
+    
+    P_fmt=case_when(
+      is.na(P) ~ "—",
+      P<0.001 ~ "<0.001",
+      TRUE ~ sprintf("%.3f",P)
+    ),
+    
+    FDR_fmt=case_when(
+      is.na(P_FDR) ~ "—",
+      P_FDR<0.001 ~ "<0.001",
+      TRUE ~ sprintf("%.3f",P_FDR)
+    )
+  ) %>%
+  
+  arrange(
+    Exposure_label,
+    Model_label
+  ) %>%
+  
+  select(
+    Exposure=Exposure_label,
+    Model=Model_label,
+    M,
+    Beta,
+    Lower_95CI=Lower95,
+    Upper_95CI=Upper95,
+    `Beta (95% CI)`=Beta_95CI,
+    `P value`=P_fmt,
+    P_FDR_numeric=P_FDR,
+    `FDR-adjusted P`=FDR_fmt
+  ) %>%
+  
+  mutate(
+    Exposure=as.character(Exposure),
+    Model=as.character(Model)
+  )
+
+write_csv(
+  publication_table,
+  file.path(
+    out_dir,
+    "Step27_publication_results_FINAL.csv"
+  )
+)
+
+# ==============================================================================
+# 17. PRIMARY FULLY ADJUSTED RESULTS
+# ==============================================================================
+
+primary_model2 <- publication_table %>%
+  filter(
+    Model=="Model 2",
+    Exposure %in% c(
+      "Work/school-day outdoor time",
+      "Non-work/non-school-day outdoor time"
+    )
+  ) %>%
+  select(
+    Exposure,
+    `Beta (95% CI)`,
+    `P value`,
+    `FDR-adjusted P`
+  )
+
+write_csv(
+  primary_model2,
+  file.path(
+    out_dir,
+    "Step27_primary_Model2_results_FINAL.csv"
+  )
+)
+
+# ==============================================================================
+# 18. FINAL QC
+# ==============================================================================
+
+final_qc <- tibble(
+  Item=c(
+    "MI datasets",
+    "Cycle",
+    "Cycle identification",
+    "N before exposure restriction",
+    "Survey weight",
+    "Weight source",
+    "Exposure scale",
+    "Primary exposures",
+    "Secondary exposure",
+    "Outcome",
+    "Model 1",
+    "Model 2",
+    "Survey approach",
+    "Pooling",
+    "FDR family"
+  ),
+  
+  Value=c(
+    M,
+    "2017-March 2020 pre-pandemic only",
+    "CYCLE retrieved from 1.data.rds by SEQN",
+    nrow(MI_1720[[1]]),
+    "WTMECPRP_original",
+    weight_source,
+    "Per additional hour",
+    "Work/school-day and non-work/non-school-day outdoor time",
+    "Simple mean daytime outdoor time",
+    outcome,
+    "Age + sex",
+    "Same covariates as STEP19 fully adjusted Model 4",
+    "Full 2017-2020 design followed by exposure-available survey subset",
+    "Rubin rules with finite-df t inference",
+    "BH-FDR across all 6 reported tests"
+  )
+)
+
+write_csv(
+  final_qc,
+  file.path(
+    out_dir,
+    "Step27_FINAL_QC.csv"
+  )
+)
+
+# ==============================================================================
+# 19. TABLE NOTE
+# ==============================================================================
+
+table_note <- paste(
+  "Beta coefficients represent differences in the standardized sleep rhythm",
+  "disruption index per additional hour of self-reported daytime outdoor time.",
+  "Analyses were restricted to the NHANES 2017-March 2020 pre-pandemic cycle",
+  "and used the original cycle-specific MEC examination weights (WTMECPRP).",
+  "Benjamini-Hochberg false-discovery rate correction was applied across",
+  "all six reported exposure-model comparisons."
+)
+
+writeLines(
+  table_note,
+  file.path(
+    out_dir,
+    "Step27_publication_table_note.txt"
+  )
+)
+
+# ==============================================================================
+# 20. FINAL OUTPUT
+# ==============================================================================
+
+cat("\n============================================================\n")
+cat("STEP27 OUTDOOR TIME-SLEEP RHYTHM ANALYSIS COMPLETE\n")
+cat("============================================================\n")
+cat("Cycle       : 2017-March 2020 pre-pandemic only\n")
+cat("MI datasets :",M,"\n")
+cat("Weight      : Original WTMECPRP from 1.data.rds\n")
+cat("Exposure    : Per additional hour outdoors\n")
+cat("Outcome     :",outcome,"\n")
+cat("Model 1     : Age + sex\n")
+cat("Model 2     : Same covariates as STEP19 fully adjusted model\n")
+cat("Pooling     : Rubin finite-df t inference\n")
+cat("FDR         : BH across all 6 reported tests\n")
+cat("Output      :",out_dir,"\n")
+cat("============================================================\n\n")
+
+print(
+  publication_table %>%
+    select(
+      Exposure,
+      Model,
+      `Beta (95% CI)`,
+      `P value`,
+      `FDR-adjusted P`
+    ),
+  n=Inf
+)
+
+cat("\nPrimary fully adjusted results:\n")
+print(primary_model2,n=Inf)
+
+################################################################################
+# STEP28 FINAL
+# NHANES Daytime Outdoor Time and Clinically Relevant Depressive Symptoms
+#
+# Cycle:
+#   NHANES 2017-March 2020 pre-pandemic ONLY
+#
+# Primary exposures:
+#   outdoor_workday_h
+#   outdoor_nonworkday_h
+#
+# Secondary exposure:
+#   mean_outdoor_light_h
+#
+# Outcome:
+#   PHQ9_depression_above_10
+#
+# Model 1:
+#   age + sex + race/ethnicity + education + PIR
+#
+# Model 2:
+#   fully adjusted main covariates
+#
+# Model 3:
+#   Model 2 + sleep_rhythm_index_z
+#
+# Survey:
+#   Original 2017-March 2020 MEC weight: WTMECPRP
+#
+# Analysis:
+#   20 MI datasets
+#   survey-weighted logistic regression
+#   Rubin finite-df pooling
+#   BH-FDR across all 9 reported exposure-model tests
+################################################################################
+
+rm(list=ls()); gc()
+
+library(tidyverse)
+library(survey)
+
+options(survey.lonely.psu="adjust")
+
+# ==============================================================================
+# 1. PATHS
+# ==============================================================================
+
+root_dir <- "D:/code"
+
+MI_file <- file.path(
+  root_dir,
+  "19.MI_sleep_rhythm_DEQ_behavior_analysis_list_FINAL.rds"
+)
+
+Outdoor_file <- file.path(
+  root_dir,
+  "Outdoor_light.data.rds"
+)
+
+Demo_file <- file.path(
+  root_dir,
+  "1.data.rds"
+)
+
+out_dir <- file.path(
+  root_dir,
+  "Step28_Outdoor_time_depression_FINAL"
+)
+
+dir.create(out_dir,recursive=TRUE,showWarnings=FALSE)
+
+for(f in c(MI_file,Outdoor_file,Demo_file)){
+  if(!file.exists(f)) stop("Cannot find file: ",f)
+}
+
+# ==============================================================================
+# 2. LOAD
+# ==============================================================================
+
+MI_list <- readRDS(MI_file)
+Outdoor <- readRDS(Outdoor_file)
+Demo <- readRDS(Demo_file)
+
+if(!is.list(MI_list) || length(MI_list)<2)
+  stop("MI_file must contain a list of multiply imputed datasets.")
+
+M <- length(MI_list)
+
+cat("MI datasets:",M,"\n")
+cat("Full MI N:",nrow(MI_list[[1]]),"\n")
+cat("Outdoor N:",nrow(Outdoor),"\n")
+cat("Demographic N:",nrow(Demo),"\n")
+
+# ==============================================================================
+# 3. OUTDOOR EXPOSURES
+# ==============================================================================
+
+outdoor_required <- c(
+  "SEQN",
+  "outdoor_workday_min",
+  "outdoor_nonworkday_min",
+  "mean_outdoor_light_min"
+)
+
+miss <- setdiff(outdoor_required,names(Outdoor))
+
+if(length(miss)>0)
+  stop("Missing Outdoor variables: ",paste(miss,collapse=", "))
+
+Outdoor <- Outdoor %>%
+  transmute(
+    SEQN=as.numeric(SEQN),
+    outdoor_workday_h=outdoor_workday_min/60,
+    outdoor_nonworkday_h=outdoor_nonworkday_min/60,
+    mean_outdoor_light_h=mean_outdoor_light_min/60
+  )
+
+if(anyDuplicated(Outdoor$SEQN)>0)
+  stop("Duplicated SEQN detected in Outdoor dataset.")
+
+# ==============================================================================
+# 4. ORIGINAL 2017-2020 SURVEY INFORMATION
+# ==============================================================================
+
+demo_required <- c(
+  "SEQN","CYCLE","WTMECPRP","SDMVPSU","SDMVSTRA"
+)
+
+miss <- setdiff(demo_required,names(Demo))
+
+if(length(miss)>0){
+  stop(
+    "Required original survey variables missing from 1.data.rds: ",
+    paste(miss,collapse=", ")
+  )
+}
+
+demo_1720 <- Demo %>%
+  mutate(SEQN=as.numeric(SEQN)) %>%
+  filter(CYCLE=="2017-2020") %>%
+  transmute(
+    SEQN,
+    cycle_1720=CYCLE,
+    WTMECPRP_original=as.numeric(WTMECPRP),
+    PSU_1720=as.numeric(SDMVPSU),
+    STRATA_1720=as.numeric(SDMVSTRA)
+  )
+
+if(nrow(demo_1720)==0)
+  stop("No 2017-2020 participants found in 1.data.rds.")
+
+if(anyDuplicated(demo_1720$SEQN)>0)
+  stop("Duplicated SEQN detected in 2017-2020 demographic data.")
+
+demo_weight_qc <- demo_1720 %>%
+  summarise(
+    N=n(),
+    weight_available=sum(!is.na(WTMECPRP_original)),
+    weight_positive=sum(
+      !is.na(WTMECPRP_original) &
+        WTMECPRP_original>0
+    ),
+    weight_missing=sum(is.na(WTMECPRP_original)),
+    weight_nonpositive=sum(
+      !is.na(WTMECPRP_original) &
+        WTMECPRP_original<=0
+    )
+  )
+
+print(demo_weight_qc)
+
+write_csv(
+  demo_weight_qc,
+  file.path(out_dir,"Step28_demographic_weight_QC.csv")
+)
+
+weight_source <- "Original 2017-March 2020 WTMECPRP from 1.data.rds"
+
+# ==============================================================================
+# 5. VARIABLES
+# ==============================================================================
+
+primary_exposures <- c(
+  "outdoor_workday_h",
+  "outdoor_nonworkday_h"
+)
+
+secondary_exposure <- "mean_outdoor_light_h"
+
+all_exposures <- c(
+  primary_exposures,
+  secondary_exposure
+)
+
+outcome <- "PHQ9_depression_above_10"
+
+cov_model1 <- c(
+  "RIDAGEYR",
+  "sex",
+  "race_ethnicity",
+  "education",
+  "INDFMPIR"
+)
+
+cov_model2 <- c(
+  cov_model1,
+  "BMI_value",
+  "MET_total",
+  "sedentary_min",
+  "smoke_status",
+  "Alcohol_Status",
+  "diabetes_or_prediabetes",
+  "htn_status",
+  "work_status"
+)
+
+cov_model3 <- c(
+  cov_model2,
+  "sleep_rhythm_index_z"
+)
+
+models <- list(
+  Model1_demographic=cov_model1,
+  Model2_full=cov_model2,
+  Model3_full_plus_sleep_rhythm=cov_model3
+)
+
+factor_vars <- c(
+  "sex",
+  "race_ethnicity",
+  "education",
+  "smoke_status",
+  "Alcohol_Status",
+  "diabetes_or_prediabetes",
+  "htn_status",
+  "work_status"
+)
+
+# ==============================================================================
+# 6. PREPARE EACH MI DATASET
+# ==============================================================================
+
+prepare_MI <- function(dat){
+  
+  if(!"SEQN" %in% names(dat))
+    stop("SEQN missing from MI dataset.")
+  
+  dat$SEQN <- as.numeric(dat$SEQN)
+  
+  n_full <- nrow(dat)
+  
+  dat <- dat %>%
+    left_join(
+      demo_1720,
+      by="SEQN"
+    )
+  
+  if(nrow(dat)!=n_full)
+    stop("Demographic merge changed MI sample size.")
+  
+  dat <- dat %>%
+    filter(!is.na(cycle_1720))
+  
+  if(nrow(dat)==0)
+    stop("No 2017-2020 participants remained after demographic merge.")
+  
+  bad_weight <- is.na(dat$WTMECPRP_original) |
+    dat$WTMECPRP_original<=0
+  
+  if(any(bad_weight)){
+    stop(
+      "Missing/non-positive WTMECPRP detected in STEP28 analytic-cycle cohort: ",
+      sum(bad_weight)
+    )
+  }
+  
+  bad_design <- is.na(dat$PSU_1720) |
+    is.na(dat$STRATA_1720)
+  
+  if(any(bad_design)){
+    stop(
+      "Missing PSU/strata detected in STEP28 analytic-cycle cohort: ",
+      sum(bad_design)
+    )
+  }
+  
+  n_before <- nrow(dat)
+  
+  dat <- dat %>%
+    left_join(
+      Outdoor,
+      by="SEQN"
+    )
+  
+  if(nrow(dat)!=n_before)
+    stop("Outdoor merge changed sample size.")
+  
+  required <- unique(c(
+    "SEQN",
+    outcome,
+    cov_model3,
+    "WTMECPRP_original",
+    "PSU_1720",
+    "STRATA_1720"
+  ))
+  
+  miss <- setdiff(required,names(dat))
+  
+  if(length(miss)>0)
+    stop(
+      "Missing analytic variables: ",
+      paste(miss,collapse=", ")
+    )
+  
+  for(v in factor_vars){
+    if(!is.factor(dat[[v]]))
+      dat[[v]] <- factor(dat[[v]])
+  }
+  
+  dat[[outcome]] <- case_when(
+    dat[[outcome]] %in% c(1,"1","Yes") ~ 1,
+    dat[[outcome]] %in% c(0,"0","No") ~ 0,
+    TRUE ~ NA_real_
+  )
+  
+  dat
+}
+
+MI_1720 <- lapply(
+  MI_list,
+  prepare_MI
+)
+
+cat(
+  "2017-2020 analytic-cycle N per MI:",
+  nrow(MI_1720[[1]]),
+  "\n"
+)
+
+# ==============================================================================
+# 7. FACTOR QC
+# ==============================================================================
+
+factor_qc <- expand.grid(
+  MI=seq_len(M),
+  Variable=factor_vars,
+  stringsAsFactors=FALSE
+)
+
+factor_qc$Is_factor <- mapply(
+  function(i,v)
+    is.factor(MI_1720[[i]][[v]]),
+  factor_qc$MI,
+  factor_qc$Variable
+)
+
+write_csv(
+  factor_qc,
+  file.path(out_dir,"Step28_factor_QC.csv")
+)
+
+if(any(!factor_qc$Is_factor))
+  stop("Factor QC failed.")
+
+cat("Factor QC passed.\n")
+
+# ==============================================================================
+# 8. WEIGHT QC
+# ==============================================================================
+
+weight_qc <- map_dfr(seq_len(M),function(i){
+  
+  dat <- MI_1720[[i]]
+  
+  tibble(
+    MI=i,
+    N=nrow(dat),
+    Weight_available=sum(!is.na(dat$WTMECPRP_original)),
+    Weight_positive=sum(
+      !is.na(dat$WTMECPRP_original) &
+        dat$WTMECPRP_original>0
+    ),
+    Mean=mean(dat$WTMECPRP_original,na.rm=TRUE),
+    Min=min(dat$WTMECPRP_original,na.rm=TRUE),
+    Max=max(dat$WTMECPRP_original,na.rm=TRUE)
+  )
+})
+
+write_csv(
+  weight_qc,
+  file.path(out_dir,"Step28_original_weight_QC.csv")
+)
+
+if(any(
+  weight_qc$Weight_available!=weight_qc$N |
+  weight_qc$Weight_positive!=weight_qc$N
+)){
+  stop("Survey weight QC failed.")
+}
+
+# ==============================================================================
+# 9. EXPOSURE / OUTCOME QC
+# ==============================================================================
+
+exposure_qc <- map_dfr(all_exposures,function(v){
+  
+  x <- MI_1720[[1]][[v]]
+  
+  tibble(
+    Exposure=v,
+    Role=ifelse(v %in% primary_exposures,"Primary","Secondary"),
+    N=sum(!is.na(x)),
+    Mean=mean(x,na.rm=TRUE),
+    SD=sd(x,na.rm=TRUE),
+    Median=median(x,na.rm=TRUE),
+    P25=quantile(x,0.25,na.rm=TRUE),
+    P75=quantile(x,0.75,na.rm=TRUE),
+    Min=min(x,na.rm=TRUE),
+    Max=max(x,na.rm=TRUE)
+  )
+})
+
+print(exposure_qc)
+
+write_csv(
+  exposure_qc,
+  file.path(out_dir,"Step28_exposure_QC_hours.csv")
+)
+
+outcome_qc <- map_dfr(seq_len(M),function(i){
+  
+  x <- MI_1720[[i]][[outcome]]
+  
+  tibble(
+    MI=i,
+    N=sum(!is.na(x)),
+    Events=sum(x==1,na.rm=TRUE),
+    Event_percent=100*mean(x==1,na.rm=TRUE)
+  )
+})
+
+write_csv(
+  outcome_qc,
+  file.path(out_dir,"Step28_outcome_QC.csv")
+)
+
+# ==============================================================================
+# 10. SURVEY DESIGN LIST
+# ==============================================================================
+
+design_list <- lapply(
+  MI_1720,
+  function(dat){
+    
+    svydesign(
+      id=~PSU_1720,
+      strata=~STRATA_1720,
+      weights=~WTMECPRP_original,
+      nest=TRUE,
+      data=dat
+    )
+  }
+)
+
+# ==============================================================================
+# 11. MODEL FUNCTION
+# ==============================================================================
+
+run_model <- function(
+    i,
+    exposure,
+    model_name,
+    covariates
+){
+  
+  dat <- MI_1720[[i]]
+  design <- design_list[[i]]
+  
+  available <-
+    !is.na(dat[[exposure]]) &
+    !is.na(dat[[outcome]])
+  
+  N_analysis <- sum(available)
+  Events <- sum(dat[[outcome]][available]==1,na.rm=TRUE)
+  
+  if(N_analysis==0){
+    
+    return(
+      tibble(
+        MI=i,
+        Exposure=exposure,
+        Model=model_name,
+        N=0,
+        Events=0,
+        Beta=NA_real_,
+        SE=NA_real_,
+        Status="No observations"
+      )
+    )
+  }
+  
+  dsub <- subset(
+    design,
+    available
+  )
+  
+  f <- as.formula(
+    paste(
+      outcome,
+      "~",
+      paste(
+        c(exposure,covariates),
+        collapse="+"
+      )
+    )
+  )
+  
+  fit <- tryCatch(
+    svyglm(
+      f,
+      design=dsub,
+      family=quasibinomial()
+    ),
+    error=function(e) NULL
+  )
+  
+  if(is.null(fit)){
+    
+    return(
+      tibble(
+        MI=i,
+        Exposure=exposure,
+        Model=model_name,
+        N=N_analysis,
+        Events=Events,
+        Beta=NA_real_,
+        SE=NA_real_,
+        Status="Model failed"
+      )
+    )
+  }
+  
+  b <- coef(fit)
+  V <- vcov(fit)
+  
+  if(!exposure %in% names(b)){
+    
+    return(
+      tibble(
+        MI=i,
+        Exposure=exposure,
+        Model=model_name,
+        N=N_analysis,
+        Events=Events,
+        Beta=NA_real_,
+        SE=NA_real_,
+        Status="Exposure coefficient missing"
+      )
+    )
+  }
+  
+  tibble(
+    MI=i,
+    Exposure=exposure,
+    Model=model_name,
+    N=N_analysis,
+    Events=Events,
+    Beta=unname(b[exposure]),
+    SE=sqrt(V[exposure,exposure]),
+    Status="Success"
+  )
+}
+
+# ==============================================================================
+# 12. RUN ALL MODELS
+# ==============================================================================
+
+results <- map_dfr(seq_len(M),function(i){
+  
+  cat("Running MI:",i,"\n")
+  
+  map_dfr(all_exposures,function(exp_var){
+    
+    map_dfr(names(models),function(model_name){
+      
+      run_model(
+        i=i,
+        exposure=exp_var,
+        model_name=model_name,
+        covariates=models[[model_name]]
+      )
+    })
+  })
+})
+
+write_csv(
+  results,
+  file.path(out_dir,"Step28_MI_specific_results.csv")
+)
+
+# ==============================================================================
+# 13. MODEL STATUS QC
+# ==============================================================================
+
+model_qc <- results %>%
+  count(
+    Exposure,
+    Model,
+    Status
+  )
+
+print(model_qc)
+
+write_csv(
+  model_qc,
+  file.path(out_dir,"Step28_model_status_QC.csv")
+)
+
+if(any(results$Status!="Success")){
+  print(results %>% filter(Status!="Success"))
+  stop("One or more STEP28 models failed.")
+}
+
+# ==============================================================================
+# 14. RUBIN POOLING — FINITE-DF t INFERENCE
+# ==============================================================================
+
+pool_scalar <- function(df){
+  
+  ok <- is.finite(df$Beta) & is.finite(df$SE)
+  
+  beta <- df$Beta[ok]
+  se <- df$SE[ok]
+  
+  m <- length(beta)
+  
+  if(m<2){
+    return(
+      tibble(
+        M=m,
+        Beta=NA_real_,
+        SE=NA_real_,
+        df=NA_real_,
+        Lower_beta=NA_real_,
+        Upper_beta=NA_real_,
+        OR=NA_real_,
+        Lower95=NA_real_,
+        Upper95=NA_real_,
+        P=NA_real_
+      )
+    )
+  }
+  
+  qbar <- mean(beta)
+  W <- mean(se^2)
+  B <- var(beta)
+  
+  T <- W+(1+1/m)*B
+  SE_pool <- sqrt(T)
+  
+  if(is.finite(B) && B>0 && is.finite(W) && W>0){
+    
+    r <- ((1+1/m)*B)/W
+    df <- (m-1)*(1+1/r)^2
+    
+  }else{
+    
+    df <- Inf
+  }
+  
+  crit <- if(is.finite(df))
+    qt(0.975,df=df) else qnorm(0.975)
+  
+  stat <- qbar/SE_pool
+  
+  p <- if(is.finite(df))
+    2*pt(abs(stat),df=df,lower.tail=FALSE)
+  else
+    2*pnorm(abs(stat),lower.tail=FALSE)
+  
+  lower_beta <- qbar-crit*SE_pool
+  upper_beta <- qbar+crit*SE_pool
+  
+  tibble(
+    M=m,
+    Beta=qbar,
+    SE=SE_pool,
+    df=df,
+    Lower_beta=lower_beta,
+    Upper_beta=upper_beta,
+    OR=exp(qbar),
+    Lower95=exp(lower_beta),
+    Upper95=exp(upper_beta),
+    P=p
+  )
+}
+
+pooled_results <- results %>%
+  filter(Status=="Success") %>%
+  group_by(
+    Exposure,
+    Model
+  ) %>%
+  group_modify(~pool_scalar(.x)) %>%
+  ungroup()
+
+# ==============================================================================
+# 15. BH-FDR ACROSS ALL 9 REPORTED TESTS
+# ==============================================================================
+
+pooled_results <- pooled_results %>%
+  mutate(
+    P_FDR=p.adjust(
+      P,
+      method="BH"
+    )
+  )
+
+write_csv(
+  pooled_results,
+  file.path(
+    out_dir,
+    "Step28_Rubin_pooled_results_with_FDR.csv"
+  )
+)
+
+# ==============================================================================
+# 16. PUBLICATION LABELS
+# ==============================================================================
+
+exposure_labels <- c(
+  outdoor_workday_h=
+    "Work/school-day outdoor time",
+  outdoor_nonworkday_h=
+    "Non-work/non-school-day outdoor time",
+  mean_outdoor_light_h=
+    "Mean daytime outdoor time (secondary)"
+)
+
+model_labels <- c(
+  Model1_demographic="Model 1",
+  Model2_full="Model 2",
+  Model3_full_plus_sleep_rhythm="Model 3"
+)
+
+exposure_order <- c(
+  "Work/school-day outdoor time",
+  "Non-work/non-school-day outdoor time",
+  "Mean daytime outdoor time (secondary)"
+)
+
+# ==============================================================================
+# 17. FINAL PUBLICATION TABLE
+# ==============================================================================
+
+publication_table <- pooled_results %>%
+  mutate(
+    Exposure_label=recode(
+      Exposure,
+      !!!exposure_labels
+    ),
+    
+    Model_label=recode(
+      Model,
+      !!!model_labels
+    ),
+    
+    Exposure_label=factor(
+      Exposure_label,
+      levels=exposure_order
+    ),
+    
+    Model_label=factor(
+      Model_label,
+      levels=c("Model 1","Model 2","Model 3")
+    ),
+    
+    OR_95CI=sprintf(
+      "%.3f (%.3f to %.3f)",
+      OR,
+      Lower95,
+      Upper95
+    ),
+    
+    P_fmt=case_when(
+      is.na(P) ~ "—",
+      P<0.001 ~ "<0.001",
+      TRUE ~ sprintf("%.3f",P)
+    ),
+    
+    FDR_fmt=case_when(
+      is.na(P_FDR) ~ "—",
+      P_FDR<0.001 ~ "<0.001",
+      TRUE ~ sprintf("%.3f",P_FDR)
+    )
+  ) %>%
+  
+  arrange(
+    Exposure_label,
+    Model_label
+  ) %>%
+  
+  select(
+    Exposure=Exposure_label,
+    Model=Model_label,
+    M,
+    OR,
+    Lower_95CI=Lower95,
+    Upper_95CI=Upper95,
+    `OR (95% CI)`=OR_95CI,
+    `P value`=P_fmt,
+    P_FDR_numeric=P_FDR,
+    `FDR-adjusted P`=FDR_fmt
+  ) %>%
+  
+  mutate(
+    Exposure=as.character(Exposure),
+    Model=as.character(Model)
+  )
+
+write_csv(
+  publication_table,
+  file.path(
+    out_dir,
+    "Step28_publication_results_FINAL.csv"
+  )
+)
+
+# ==============================================================================
+# 18. PRIMARY FULLY ADJUSTED RESULTS
+# ==============================================================================
+
+primary_model2 <- publication_table %>%
+  filter(
+    Model=="Model 2",
+    Exposure %in% c(
+      "Work/school-day outdoor time",
+      "Non-work/non-school-day outdoor time"
+    )
+  ) %>%
+  select(
+    Exposure,
+    `OR (95% CI)`,
+    `P value`,
+    `FDR-adjusted P`
+  )
+
+write_csv(
+  primary_model2,
+  file.path(
+    out_dir,
+    "Step28_primary_Model2_results_FINAL.csv"
+  )
+)
+
+# ==============================================================================
+# 19. MODEL 2 VS MODEL 3 COMPARISON
+# ==============================================================================
+
+model23_compare <- publication_table %>%
+  filter(
+    Model %in% c("Model 2","Model 3")
+  ) %>%
+  select(
+    Exposure,
+    Model,
+    `OR (95% CI)`,
+    `P value`,
+    `FDR-adjusted P`
+  )
+
+write_csv(
+  model23_compare,
+  file.path(
+    out_dir,
+    "Step28_Model2_vs_Model3_FINAL.csv"
+  )
+)
+
+# ==============================================================================
+# 20. FINAL QC
+# ==============================================================================
+
+final_qc <- tibble(
+  Item=c(
+    "MI datasets",
+    "Cycle",
+    "Cycle identification",
+    "N before exposure restriction",
+    "Survey weight",
+    "Weight source",
+    "Exposure scale",
+    "Primary exposures",
+    "Secondary exposure",
+    "Outcome",
+    "Model 1",
+    "Model 2",
+    "Model 3",
+    "Survey approach",
+    "Pooling",
+    "FDR family"
+  ),
+  
+  Value=c(
+    M,
+    "2017-March 2020 pre-pandemic only",
+    "CYCLE retrieved from 1.data.rds by SEQN",
+    nrow(MI_1720[[1]]),
+    "WTMECPRP_original",
+    weight_source,
+    "Per additional hour",
+    "Work/school-day and non-work/non-school-day outdoor time",
+    "Simple mean daytime outdoor time",
+    outcome,
+    "Age + sex + race/ethnicity + education + PIR",
+    "Fully adjusted main covariates",
+    "Model 2 + sleep_rhythm_index_z",
+    "Full 2017-2020 design followed by exposure/outcome-available survey subset",
+    "Rubin rules with finite-df t inference",
+    "BH-FDR across all 9 reported tests"
+  )
+)
+
+write_csv(
+  final_qc,
+  file.path(
+    out_dir,
+    "Step28_FINAL_QC.csv"
+  )
+)
+
+# ==============================================================================
+# 21. TABLE NOTE
+# ==============================================================================
+
+table_note <- paste(
+  "Odds ratios represent the association with clinically relevant depressive",
+  "symptoms per additional hour of self-reported daytime outdoor time.",
+  "Analyses were restricted to the NHANES 2017-March 2020 pre-pandemic cycle",
+  "and used original cycle-specific MEC examination weights (WTMECPRP).",
+  "Model 3 additionally included the standardized sleep rhythm disruption index.",
+  "Benjamini-Hochberg false-discovery rate correction was applied across",
+  "all nine reported exposure-model comparisons."
+)
+
+writeLines(
+  table_note,
+  file.path(
+    out_dir,
+    "Step28_publication_table_note.txt"
+  )
+)
+
+# ==============================================================================
+# 22. FINAL OUTPUT
+# ==============================================================================
+
+cat("\n============================================================\n")
+cat("STEP28 OUTDOOR TIME-DEPRESSION ANALYSIS COMPLETE\n")
+cat("============================================================\n")
+cat("Cycle       : 2017-March 2020 pre-pandemic only\n")
+cat("MI datasets :",M,"\n")
+cat("Weight      : Original WTMECPRP from 1.data.rds\n")
+cat("Exposure    : Per additional hour outdoors\n")
+cat("Outcome     :",outcome,"\n")
+cat("Model 1     : Demographic adjustment\n")
+cat("Model 2     : Fully adjusted main covariates\n")
+cat("Model 3     : Model 2 + sleep_rhythm_index_z\n")
+cat("Pooling     : Rubin finite-df t inference\n")
+cat("FDR         : BH across all 9 reported tests\n")
+cat("Output      :",out_dir,"\n")
+cat("============================================================\n\n")
+
+print(
+  publication_table %>%
+    select(
+      Exposure,
+      Model,
+      `OR (95% CI)`,
+      `P value`,
+      `FDR-adjusted P`
+    ),
+  n=Inf
+)
+
+cat("\nPrimary fully adjusted results:\n")
+print(primary_model2,n=Inf)
+
+cat("\nModel 2 vs Model 3 comparison:\n")
+print(model23_compare,n=Inf)
