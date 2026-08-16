@@ -1,0 +1,3957 @@
+################################################################################
+# Script: 11. Master Data Integration
+# Purpose:
+#   Merge NHANES 2017-2023 cleaned datasets from Steps 1-10.
+#
+# Compatible with revised preprocessing scripts:
+#   1.data.rds  Demographics
+#   2.data.rds  PHQ-9 outcomes and sensitivity outcomes
+#   3.data.rds  Sleep timing and sleep duration metrics
+#   4.data.rds  Smoking status
+#   5.data.rds  BMI
+#   6.data.rds  Alcohol use
+#   7.data.rds  Diabetes / prediabetes
+#   8.data.rds  Hypertension
+#   9.data.rds  Work status
+#   10.data.rds Physical activity and sedentary behavior
+#
+# Output:
+#   - D:/code/11.Dataset.rds
+#   - D:/code/qc_outputs/Step11_master_merge_qc.csv
+################################################################################
+
+# 1. Libraries -----------------------------------------------------------------
+
+library(tidyverse)
+
+# 2. Environment ---------------------------------------------------------------
+
+base_path <- "D:/code"
+setwd(base_path)
+
+qc_dir <- file.path(base_path, "qc_outputs")
+
+if (!dir.exists(qc_dir)) {
+  dir.create(qc_dir, recursive = TRUE)
+}
+
+# 3. Helper Functions ----------------------------------------------------------
+
+load_and_fix <- function(file_name) {
+  
+  file_path <- file.path(base_path, file_name)
+  
+  if (!file.exists(file_path)) {
+    stop("Missing required file: ", file_path)
+  }
+  
+  readRDS(file_path) %>%
+    mutate(SEQN = suppressWarnings(as.numeric(as.character(SEQN))))
+}
+
+check_duplicate_seqn <- function(df, df_name) {
+  
+  dup_n <- df %>%
+    count(SEQN, name = "n") %>%
+    filter(!is.na(SEQN), n > 1) %>%
+    nrow()
+  
+  if (dup_n > 0) {
+    stop(
+      "Duplicate SEQN detected in ",
+      df_name,
+      ". Please check before merging."
+    )
+  }
+  
+  invisible(TRUE)
+}
+
+safe_select <- function(df, vars, df_name) {
+  
+  missing_vars <- setdiff(vars, names(df))
+  
+  if (length(missing_vars) > 0) {
+    stop(
+      "Missing variables in ",
+      df_name,
+      ": ",
+      paste(missing_vars, collapse = ", ")
+    )
+  }
+  
+  df %>%
+    select(all_of(vars))
+}
+
+# 4. Load and Select Datasets --------------------------------------------------
+
+cat("Step 1: Loading cleaned RDS files and standardizing SEQN...\n")
+
+# Step 1: Demographics
+df1_raw <- load_and_fix("1.data.rds")
+
+df1 <- df1_raw %>%
+  select(
+    -any_of(c(
+      "WTINTPRP", "WTMECPRP", "WTINT2YR", "WTMEC2YR",
+      "SDDSRVYR", "RIDSTATR"
+    ))
+  )
+
+# Step 2: PHQ-9 outcomes
+df2_raw <- load_and_fix("2.data.rds")
+
+df2 <- safe_select(
+  df2_raw,
+  c(
+    "SEQN",
+    
+    "DPQ010", "DPQ020", "DPQ030", "DPQ040", "DPQ050",
+    "DPQ060", "DPQ070", "DPQ080", "DPQ090",
+    
+    "PHQ9_ITEM_MISSING_N",
+    "PHQ9_SCORE",
+    "PHQ9_depression_above_10",
+    "Moderate_depression_above",
+    
+    "PHQ9_depression_above_15",
+    "ModSevere_depression_above",
+    
+    "PHQ9_no_sleep_ITEM_MISSING_N",
+    "PHQ9_no_sleep_SCORE",
+    "PHQ9_no_sleep_depression_above_10",
+    "PHQ9_no_sleep_depression_above_9",
+    
+    "suicidal_ideation_any",
+    "suicidal_ideation_daily",
+    
+    "PHQ9_Category_Num",
+    "PHQ9_Category"
+  ),
+  "2.data.rds"
+)
+
+# Step 3: Sleep metrics
+df3_raw <- load_and_fix("3.data.rds")
+
+df3 <- safe_select(
+  df3_raw,
+  c(
+    "SEQN",
+    
+    "dur_wd_raw",
+    "dur_we_raw",
+    "dur_wd_implausible_flag",
+    "dur_we_implausible_flag",
+    
+    "dur_wd",
+    "dur_we",
+    
+    "sleep_onset_wd_raw",
+    "wake_time_wd_raw",
+    "sleep_onset_we_raw",
+    "wake_time_we_raw",
+    
+    "sleep_onset_wd_min",
+    "wake_time_wd_min",
+    "sleep_onset_we_min",
+    "wake_time_we_min",
+    
+    "sleep_onset_wd_hour",
+    "wake_time_wd_hour",
+    "sleep_onset_we_hour",
+    "wake_time_we_hour",
+    
+    "midpoint_wd_min",
+    "midpoint_we_min",
+    "midpoint_wd_hour",
+    "midpoint_we_hour",
+    "midpoint_wd_hhmm",
+    "midpoint_we_hhmm",
+    
+    "SJL_raw_min",
+    "SJL_abs_min",
+    "SJL_abs_hour",
+    
+    "WCS_raw_hour",
+    "WCS_abs_hour",
+    
+    "dur_wd_cat",
+    "dur_we_cat",
+    "dur_wd_cat_num",
+    "dur_we_cat_num"
+  ),
+  "3.data.rds"
+)
+
+# Step 4: Smoking
+df4_raw <- load_and_fix("4.data.rds")
+
+df4 <- safe_select(
+  df4_raw,
+  c(
+    "SEQN",
+    "SMQ020",
+    "SMQ040",
+    "smoked_100_cigarettes",
+    "current_smoking_now_among_ever_smokers",
+    "smoke_status",
+    "smoke_status_num",
+    "smoke_status_label",
+    "smoke_label"
+  ),
+  "4.data.rds"
+)
+
+# Step 5: BMI
+df5_raw <- load_and_fix("5.data.rds")
+
+df5 <- safe_select(
+  df5_raw,
+  c(
+    "SEQN",
+    "BMI_raw",
+    "BMI_implausible_flag",
+    "BMI_value",
+    "BMI_cat",
+    "BMI_cat_ordinal",
+    "BMI_detailed",
+    "BMI_detailed_ordinal"
+  ),
+  "5.data.rds"
+)
+
+# Step 6: Alcohol
+df6_raw <- load_and_fix("6.data.rds")
+
+df6 <- safe_select(
+  df6_raw,
+  c(
+    "SEQN",
+    "ALQ111",
+    "ALQ151",
+    "lifetime_12_drinks",
+    "heavy_drinking_history",
+    "Alcohol_Status",
+    "Alcohol_Status_Num",
+    "Alcohol_Label",
+    "AlcoholCategory"
+  ),
+  "6.data.rds"
+)
+
+# Step 7: Diabetes / prediabetes
+df7_raw <- load_and_fix("7.data.rds")
+
+df7 <- safe_select(
+  df7_raw,
+  c(
+    "SEQN",
+    "DIQ010",
+    "diabetes_status_3level",
+    "diabetes_status_3level_label",
+    "diabetes_or_prediabetes",
+    "diabetes_or_prediabetes_label",
+    "diabetes_status",
+    "diabetes_label"
+  ),
+  "7.data.rds"
+)
+
+# Step 8: Hypertension
+df8_raw <- load_and_fix("8.data.rds")
+
+df8 <- safe_select(
+  df8_raw,
+  c(
+    "SEQN",
+    "BPQ020",
+    "htn_status",
+    "htn_status_label",
+    "hypertension_status",
+    "hypertension_label"
+  ),
+  "8.data.rds"
+)
+
+# Step 9: Work status
+df9_raw <- load_and_fix("9.data.rds")
+
+df9 <- safe_select(
+  df9_raw,
+  c(
+    "SEQN",
+    "OCD150",
+    "work_status",
+    "work_status_label",
+    "employment_status",
+    "employment_label"
+  ),
+  "9.data.rds"
+)
+
+# Step 10: Physical activity and sedentary behavior
+df10_raw <- load_and_fix("10.data.rds")
+
+df10 <- safe_select(
+  df10_raw,
+  c(
+    "SEQN",
+    
+    "MET_high_raw",
+    "MET_mod_raw",
+    "MET_total_raw",
+    "MET_total_truncated_flag",
+    "MET_total",
+    
+    "MET_cat_label",
+    "MET_cat_num",
+    
+    "sedentary_min_raw",
+    "sedentary_truncated_flag",
+    "sedentary_min",
+    
+    "sedentary_cat_label",
+    "sedentary_cat_num"
+  ),
+  "10.data.rds"
+)
+
+# 5. Duplicate SEQN Checks -----------------------------------------------------
+
+cat("Step 2: Checking duplicate SEQN within each dataset...\n")
+
+data_named_list <- list(
+  df1 = df1,
+  df2 = df2,
+  df3 = df3,
+  df4 = df4,
+  df5 = df5,
+  df6 = df6,
+  df7 = df7,
+  df8 = df8,
+  df9 = df9,
+  df10 = df10
+)
+
+walk2(
+  data_named_list,
+  names(data_named_list),
+  check_duplicate_seqn
+)
+
+# 6. Sequential Merge ----------------------------------------------------------
+
+cat("Step 3: Merging datasets by SEQN using demographics as the analytic spine...\n")
+
+final_dataset <- data_named_list %>%
+  reduce(left_join, by = "SEQN")
+
+# 7. Final QC ------------------------------------------------------------------
+
+cat("\nStep 4: Final merge QC...\n")
+
+merge_qc <- tibble(
+  dataset = names(data_named_list),
+  n_rows = map_int(data_named_list, nrow),
+  n_unique_seqn = map_int(data_named_list, ~ n_distinct(.x$SEQN, na.rm = TRUE)),
+  n_missing_seqn = map_int(data_named_list, ~ sum(is.na(.x$SEQN)))
+)
+
+print(merge_qc)
+
+final_missing_qc <- final_dataset %>%
+  summarise(
+    n_total = n(),
+    
+    missing_demo_weight = sum(is.na(mec_adj)),
+    zero_or_negative_mec_weight = sum(!is.na(mec_adj) & mec_adj <= 0),
+    
+    missing_PHQ9 = sum(is.na(PHQ9_SCORE)),
+    missing_PHQ9_main_outcome =
+      sum(is.na(PHQ9_depression_above_10)),
+    
+    missing_sleep_duration_wd = sum(is.na(dur_wd)),
+    missing_sleep_duration_we = sum(is.na(dur_we)),
+    missing_midpoint_wd = sum(is.na(midpoint_wd_min)),
+    missing_midpoint_we = sum(is.na(midpoint_we_min)),
+    
+    missing_smoking = sum(is.na(smoke_status)),
+    missing_BMI = sum(is.na(BMI_value)),
+    missing_alcohol = sum(is.na(Alcohol_Status)),
+    missing_diabetes = sum(is.na(diabetes_or_prediabetes)),
+    missing_hypertension = sum(is.na(htn_status)),
+    missing_work_status = sum(is.na(work_status)),
+    missing_MET = sum(is.na(MET_total)),
+    missing_sedentary = sum(is.na(sedentary_min))
+  )
+
+print(final_missing_qc)
+
+cat("\nFinal Dimensions:",
+    dim(final_dataset)[1],
+    "rows and",
+    dim(final_dataset)[2],
+    "variables.\n")
+
+cat("SEQN type:", class(final_dataset$SEQN), "\n")
+
+# 8. Save Outputs --------------------------------------------------------------
+
+saveRDS(final_dataset, file.path(base_path, "11.Dataset.rds"))
+
+write_csv(
+  merge_qc,
+  file.path(qc_dir, "Step11_master_merge_dataset_size_qc.csv")
+)
+
+write_csv(
+  final_missing_qc,
+  file.path(qc_dir, "Step11_master_merge_missingness_qc.csv")
+)
+
+cat("\nMaster dataset saved to:",
+    file.path(base_path, "11.Dataset.rds"),
+    "\n")
+
+cat("QC files saved to:", qc_dir, "\n")
+
+################################################################################
+# SCRIPT: 12. Participant Selection for MI and Complete-Case Analyses
+# STUDY: Sleep Rhythm / Circadian Misalignment and Depressive Symptoms
+# DATA: NHANES 2017-March 2020 + 2021-2023
+#
+# Strategy:
+#   Primary analysis:
+#     - Keep participants with complete PHQ-9 outcome, sleep exposures,
+#       survey design variables, and positive MEC weight.
+#     - Exclude pregnant participants.
+#     - Do NOT drop participants with missing covariates.
+#     - Missing covariates will be handled by multiple imputation later.
+#
+#   Sensitivity analysis:
+#     - Complete-case dataset using all main covariates.
+#
+# Input:
+#   - D:/code/11.Dataset.rds
+#
+# Outputs:
+#   - D:/code/12.Dataset_MI_Eligible.rds
+#   - D:/code/12.Dataset_CompleteCase.rds
+#   - D:/code/12.Dataset.rds  [alias of complete-case dataset for compatibility]
+################################################################################
+
+# 1. Environment & Libraries ---------------------------------------------------
+
+library(tidyverse)
+library(tidyr)
+
+base_path <- "D:/code"
+setwd(base_path)
+
+qc_dir <- file.path(base_path, "qc_outputs")
+
+if (!dir.exists(qc_dir)) {
+  dir.create(qc_dir, recursive = TRUE)
+}
+
+# 2. Helper Functions ----------------------------------------------------------
+
+check_required_vars <- function(data, vars, label) {
+  missing_vars <- setdiff(vars, names(data))
+  
+  if (length(missing_vars) > 0) {
+    stop(
+      "Missing required variables for ",
+      label,
+      ": ",
+      paste(missing_vars, collapse = ", ")
+    )
+  }
+  
+  invisible(TRUE)
+}
+
+count_missing_by_var <- function(data, vars) {
+  data %>%
+    summarise(
+      across(
+        all_of(vars),
+        ~ sum(is.na(.x))
+      )
+    ) %>%
+    pivot_longer(
+      everything(),
+      names_to = "Variable",
+      values_to = "N_Missing"
+    ) %>%
+    arrange(desc(N_Missing), Variable)
+}
+
+# 3. Data Loading --------------------------------------------------------------
+
+cat("Loading consolidated NHANES master dataset...\n")
+
+df_raw <- readRDS("11.Dataset.rds")
+initial_n <- nrow(df_raw)
+
+cat("Initial master dataset N:", initial_n, "\n")
+
+# 4. Define Variables ----------------------------------------------------------
+
+# Primary outcome variables: required complete
+outcome_vars <- c(
+  "PHQ9_SCORE",
+  "PHQ9_depression_above_10",
+  "Moderate_depression_above"
+)
+
+# Sensitivity outcome variables: retained, not required for MI eligibility
+sensitivity_outcome_vars <- c(
+  "PHQ9_depression_above_15",
+  "ModSevere_depression_above",
+  "PHQ9_no_sleep_SCORE",
+  "PHQ9_no_sleep_depression_above_10",
+  "PHQ9_no_sleep_depression_above_9",
+  "suicidal_ideation_daily"
+)
+
+# Core exposure variables: required complete
+sleep_vars <- c(
+  "sleep_onset_wd_min",
+  "wake_time_wd_min",
+  "midpoint_wd_min",
+  
+  "sleep_onset_we_min",
+  "wake_time_we_min",
+  "midpoint_we_min",
+  
+  "sleep_onset_wd_hour",
+  "wake_time_wd_hour",
+  "midpoint_wd_hour",
+  
+  "sleep_onset_we_hour",
+  "wake_time_we_hour",
+  "midpoint_we_hour",
+  
+  "dur_wd",
+  "dur_we",
+  "dur_wd_cat",
+  "dur_we_cat",
+  "dur_wd_cat_num",
+  "dur_we_cat_num"
+)
+
+# Survey design variables: required complete
+design_vars <- c(
+  "SDMVPSU",
+  "SDMVSTRA",
+  "mec_adj",
+  "int_adj"
+)
+
+# Pregnancy exclusion variable
+pregnancy_var <- "RIDEXPRG"
+
+# Covariates allowed to be missing in MI-eligible dataset
+demographic_covariates <- c(
+  "RIDAGEYR",
+  "sex",
+  "race_ethnicity",
+  "education",
+  "marital_status",
+  "INDFMPIR",
+  "PIR_cat",
+  "PIR_cat_num",
+  "Age_cat",
+  "Age_cat_num"
+)
+
+main_covariates <- c(
+  "BMI_value",
+  "BMI_cat",
+  "BMI_cat_ordinal",
+  
+  "smoke_status",
+  "smoke_status_label",
+  
+  "Alcohol_Status",
+  "Alcohol_Label",
+  
+  "diabetes_or_prediabetes",
+  "diabetes_or_prediabetes_label",
+  
+  "htn_status",
+  "htn_status_label",
+  
+  "work_status",
+  "work_status_label",
+  
+  "MET_total",
+  "MET_cat_label",
+  "MET_cat_num",
+  
+  "sedentary_min",
+  "sedentary_cat_label",
+  "sedentary_cat_num"
+)
+
+covariate_vars <- c(
+  demographic_covariates,
+  main_covariates
+)
+
+# Variables required for MI eligibility
+mi_required_complete_vars <- c(
+  outcome_vars,
+  sleep_vars,
+  design_vars,
+  pregnancy_var
+)
+
+all_required_vars <- unique(c(
+  mi_required_complete_vars,
+  sensitivity_outcome_vars,
+  covariate_vars
+))
+
+check_required_vars(
+  df_raw,
+  all_required_vars,
+  "MI eligible and complete-case participant selection"
+)
+
+# 5. Sequential Selection for MI-Eligible Dataset ------------------------------
+
+# Step 1: Complete primary PHQ-9 outcome
+df_step1 <- df_raw %>%
+  filter(
+    !is.na(PHQ9_SCORE),
+    !is.na(PHQ9_depression_above_10)
+  )
+
+n_after_phq <- nrow(df_step1)
+
+# Step 2: Valid survey design and positive MEC weight
+df_step2 <- df_step1 %>%
+  filter(
+    !is.na(SDMVPSU),
+    !is.na(SDMVSTRA),
+    !is.na(mec_adj),
+    mec_adj > 0
+  )
+
+n_after_design_weight <- nrow(df_step2)
+
+# Step 3: Complete core sleep exposure variables
+df_step3 <- df_step2 %>%
+  drop_na(all_of(sleep_vars))
+
+n_after_sleep <- nrow(df_step3)
+
+# Step 4: Exclude pregnant participants
+# RIDEXPRG == 1 indicates pregnant.
+# NA is retained because men and non-eligible participants can have missing RIDEXPRG.
+df_mi_eligible <- df_step3 %>%
+  filter(RIDEXPRG != 1 | is.na(RIDEXPRG))
+
+n_after_preg <- nrow(df_mi_eligible)
+
+# 6. Complete-Case Dataset for Sensitivity Analysis ----------------------------
+
+df_complete_case <- df_mi_eligible %>%
+  drop_na(all_of(covariate_vars))
+
+complete_case_n <- nrow(df_complete_case)
+
+# 7. Participant Flow Summary --------------------------------------------------
+
+selection_flow <- tibble(
+  Step = c(
+    "Initial NHANES 2017-2023 merged dataset",
+    "Completed PHQ-9 primary outcome",
+    "Valid MEC survey design and positive MEC weight",
+    "Completed core sleep timing and duration variables",
+    "Excluded pregnant individuals",
+    "MI-eligible analytical sample",
+    "Complete-case analytical sample"
+  ),
+  N = c(
+    initial_n,
+    n_after_phq,
+    n_after_design_weight,
+    n_after_sleep,
+    n_after_preg,
+    n_after_preg,
+    complete_case_n
+  ),
+  Excluded_from_previous_step = c(
+    0,
+    initial_n - n_after_phq,
+    n_after_phq - n_after_design_weight,
+    n_after_design_weight - n_after_sleep,
+    n_after_sleep - n_after_preg,
+    0,
+    n_after_preg - complete_case_n
+  )
+)
+
+cat("\n--- PARTICIPANT SELECTION FLOW ---\n")
+print(selection_flow)
+
+# 8. Missingness QC ------------------------------------------------------------
+
+cat("\n--- MI-ELIGIBLE DATASET: REQUIRED VARIABLE MISSINGNESS ---\n")
+
+mi_required_missing_check <- count_missing_by_var(
+  df_mi_eligible,
+  unique(c(outcome_vars, sleep_vars, design_vars))
+) %>%
+  filter(N_Missing > 0)
+
+if (nrow(mi_required_missing_check) == 0) {
+  cat("Success: No missing values in MI-required outcome/exposure/design variables.\n")
+} else {
+  print(mi_required_missing_check)
+}
+
+cat("\n--- MI-ELIGIBLE DATASET: COVARIATE MISSINGNESS FOR IMPUTATION ---\n")
+
+mi_covariate_missingness <- count_missing_by_var(
+  df_mi_eligible,
+  covariate_vars
+) %>%
+  mutate(
+    N_Total = nrow(df_mi_eligible),
+    Missing_Percent = round(100 * N_Missing / N_Total, 2)
+  )
+
+print(mi_covariate_missingness)
+
+cat("\n--- COMPLETE-CASE DATASET: MAIN ANALYSIS VARIABLE MISSINGNESS ---\n")
+
+complete_case_missing_check <- count_missing_by_var(
+  df_complete_case,
+  unique(c(outcome_vars, sleep_vars, design_vars, covariate_vars))
+) %>%
+  filter(N_Missing > 0)
+
+if (nrow(complete_case_missing_check) == 0) {
+  cat("Success: No missing values in complete-case analysis variables.\n")
+} else {
+  print(complete_case_missing_check)
+}
+
+# 9. Key Counts ----------------------------------------------------------------
+
+cat("\n--- KEY COUNTS ---\n")
+
+key_counts <- tibble(
+  dataset = c(
+    "MI-eligible",
+    "Complete-case"
+  ),
+  n = c(
+    nrow(df_mi_eligible),
+    nrow(df_complete_case)
+  ),
+  phq9_ge10_cases = c(
+    sum(df_mi_eligible$PHQ9_depression_above_10 == 1, na.rm = TRUE),
+    sum(df_complete_case$PHQ9_depression_above_10 == 1, na.rm = TRUE)
+  ),
+  phq9_ge15_cases = c(
+    sum(df_mi_eligible$PHQ9_depression_above_15 == 1, na.rm = TRUE),
+    sum(df_complete_case$PHQ9_depression_above_15 == 1, na.rm = TRUE)
+  ),
+  phq9_no_sleep_ge10_cases = c(
+    sum(df_mi_eligible$PHQ9_no_sleep_depression_above_10 == 1, na.rm = TRUE),
+    sum(df_complete_case$PHQ9_no_sleep_depression_above_10 == 1, na.rm = TRUE)
+  ),
+  phq9_no_sleep_ge9_cases = c(
+    sum(df_mi_eligible$PHQ9_no_sleep_depression_above_9 == 1, na.rm = TRUE),
+    sum(df_complete_case$PHQ9_no_sleep_depression_above_9 == 1, na.rm = TRUE)
+  ),
+  daily_suicidal_ideation_cases = c(
+    sum(df_mi_eligible$suicidal_ideation_daily == 1, na.rm = TRUE),
+    sum(df_complete_case$suicidal_ideation_daily == 1, na.rm = TRUE)
+  ),
+  pregnant_remaining = c(
+    sum(df_mi_eligible$RIDEXPRG == 1, na.rm = TRUE),
+    sum(df_complete_case$RIDEXPRG == 1, na.rm = TRUE)
+  ),
+  zero_or_negative_mec_weight_remaining = c(
+    sum(!is.na(df_mi_eligible$mec_adj) & df_mi_eligible$mec_adj <= 0),
+    sum(!is.na(df_complete_case$mec_adj) & df_complete_case$mec_adj <= 0)
+  )
+)
+
+print(key_counts)
+
+# 10. Save Outputs -------------------------------------------------------------
+
+saveRDS(
+  df_mi_eligible,
+  file.path(base_path, "12.Dataset_MI_Eligible.rds")
+)
+
+saveRDS(
+  df_complete_case,
+  file.path(base_path, "12.Dataset_CompleteCase.rds")
+)
+
+# Backward-compatible alias:
+# Keep 12.Dataset.rds as complete-case dataset unless later scripts are rewritten.
+saveRDS(
+  df_complete_case,
+  file.path(base_path, "12.Dataset.rds")
+)
+
+write_csv(
+  selection_flow,
+  file.path(qc_dir, "Step12_participant_selection_flow_MI_and_completecase.csv")
+)
+
+write_csv(
+  mi_covariate_missingness,
+  file.path(qc_dir, "Step12_MI_eligible_covariate_missingness_for_imputation.csv")
+)
+
+write_csv(
+  complete_case_missing_check,
+  file.path(qc_dir, "Step12_completecase_missingness_check.csv")
+)
+
+write_csv(
+  key_counts,
+  file.path(qc_dir, "Step12_key_counts_MI_and_completecase.csv")
+)
+
+cat("\nSaved MI-eligible dataset:",
+    file.path(base_path, "12.Dataset_MI_Eligible.rds"),
+    "\n")
+
+cat("Saved complete-case dataset:",
+    file.path(base_path, "12.Dataset_CompleteCase.rds"),
+    "\n")
+
+cat("Saved backward-compatible complete-case alias:",
+    file.path(base_path, "12.Dataset.rds"),
+    "\n")
+
+cat("QC files saved to:", qc_dir, "\n")
+
+################################################################################
+# STEP 12B — Publication-ready participant flowchart v3
+# Style: based on previous manuscript flowchart
+# Output: TIFF and PDF
+################################################################################
+
+library(tidyverse)
+library(ggplot2)
+library(grid)
+
+base_path <- "D:/code"
+fig_dir <- file.path(base_path, "figures")
+if (!dir.exists(fig_dir)) dir.create(fig_dir, recursive = TRUE)
+
+# =============================================================================
+# Counts from Step 12 / Step 13
+# =============================================================================
+
+initial_n <- 27493
+
+n_after_phq <- 13731
+n_excl_phq <- 13762
+
+n_after_sleep <- 13454
+n_excl_sleep <- 277
+
+n_after_preg <- 13344
+n_excl_preg <- 110
+
+phq_lt10_n <- 11936
+phq_ge10_n <- 1408
+
+complete_case_n <- 9946
+n_excl_covariates <- n_after_preg - complete_case_n
+
+# =============================================================================
+# Helper: rounded rectangle
+# =============================================================================
+
+rounded_rect <- function(x, y, w, h, fill = "white", color = "black",
+                         linetype = "solid", linewidth = 0.5) {
+  annotate(
+    "rect",
+    xmin = x - w / 2,
+    xmax = x + w / 2,
+    ymin = y - h / 2,
+    ymax = y + h / 2,
+    fill = fill,
+    color = color,
+    linetype = linetype,
+    linewidth = linewidth
+  )
+}
+
+# =============================================================================
+# Box data
+# =============================================================================
+
+main_boxes <- tibble(
+  x = c(0, 0, 0, 0),
+  y = c(5.6, 4.35, 3.1, 1.85),
+  label = c(
+    paste0("Total participants in NHANES 2017–2023\nN = ", format(initial_n, big.mark = ",")),
+    paste0("Participants with complete PHQ-9 data\nN = ", format(n_after_phq, big.mark = ",")),
+    paste0("Participants with complete PHQ-9 and\ncore sleep variables\nN = ", format(n_after_sleep, big.mark = ",")),
+    paste0("Primary analytical sample\nMultiple imputation analyses\nN = ", format(n_after_preg, big.mark = ","))
+  ),
+  fill = c("white", "white", "white", "#EAF3FB")
+)
+
+exclusion_boxes <- tibble(
+  x = c(3.25, 3.25, 3.25),
+  y = c(5.6, 4.35, 3.1),
+  label = c(
+    paste0(
+      "Excluded: no valid PHQ-9 assessment\n",
+      "n = ", format(n_excl_phq, big.mark = ",")
+    ),
+    paste0(
+      "Excluded: missing core sleep\n",
+      "timing or duration variables\n",
+      "n = ", format(n_excl_sleep, big.mark = ",")
+    ),
+    paste0(
+      "Excluded: pregnancy\n",
+      "n = ", format(n_excl_preg, big.mark = ",")
+    )
+  )
+)
+
+bottom_boxes <- tibble(
+  x = c(-1.75, 1.75),
+  y = c(0.55, 0.55),
+  label = c(
+    paste0("PHQ-9 <10\nn = ", format(phq_lt10_n, big.mark = ",")),
+    paste0("PHQ-9 ≥10\nn = ", format(phq_ge10_n, big.mark = ","))
+  ),
+  fill = c("#EAF3FB", "#FFF1E6"),
+  color = c("#2B6CB0", "#D95F02")
+)
+
+cc_box <- tibble(
+  x = 3.25,
+  y = 1.85,
+  label = paste0(
+    "Complete-case dataset for\nexploratory spline analyses\nn = ",
+    format(complete_case_n, big.mark = ","),
+    "\nExcluded for missing covariates:\n",
+    "n = ", format(n_excl_covariates, big.mark = ",")
+  )
+)
+
+# =============================================================================
+# Plot
+# =============================================================================
+
+p_flow <- ggplot() +
+  
+  # Main flow boxes
+  geom_rect(
+    data = main_boxes,
+    aes(
+      xmin = x - 1.75,
+      xmax = x + 1.75,
+      ymin = y - 0.38,
+      ymax = y + 0.38,
+      fill = fill
+    ),
+    color = "black",
+    linewidth = 0.55,
+    show.legend = FALSE
+  ) +
+  scale_fill_identity() +
+  geom_text(
+    data = main_boxes,
+    aes(x = x, y = y, label = label),
+    size = 4.0,
+    lineheight = 0.95
+  ) +
+  
+  # Exclusion boxes
+  geom_rect(
+    data = exclusion_boxes,
+    aes(
+      xmin = x - 1.35,
+      xmax = x + 1.35,
+      ymin = y - 0.36,
+      ymax = y + 0.36
+    ),
+    fill = "white",
+    color = "grey35",
+    linetype = "dashed",
+    linewidth = 0.45
+  ) +
+  geom_text(
+    data = exclusion_boxes,
+    aes(x = x, y = y, label = label),
+    size = 3.45,
+    lineheight = 0.93
+  ) +
+  
+  # Complete-case side box
+  geom_rect(
+    data = cc_box,
+    aes(
+      xmin = x - 1.45,
+      xmax = x + 1.45,
+      ymin = y - 0.52,
+      ymax = y + 0.52
+    ),
+    fill = "white",
+    color = "grey35",
+    linetype = "dashed",
+    linewidth = 0.45
+  ) +
+  geom_text(
+    data = cc_box,
+    aes(x = x, y = y, label = label),
+    size = 3.25,
+    lineheight = 0.92
+  ) +
+  
+  # Bottom PHQ boxes
+  geom_rect(
+    data = bottom_boxes,
+    aes(
+      xmin = x - 1.25,
+      xmax = x + 1.25,
+      ymin = y - 0.34,
+      ymax = y + 0.34,
+      fill = fill,
+      color = color
+    ),
+    linewidth = 0.55,
+    show.legend = FALSE
+  ) +
+  scale_color_identity() +
+  geom_text(
+    data = bottom_boxes,
+    aes(x = x, y = y, label = label),
+    size = 3.75,
+    lineheight = 0.95
+  ) +
+  
+  # Vertical arrows
+  geom_segment(
+    aes(x = 0, xend = 0, y = 5.22, yend = 4.73),
+    arrow = arrow(length = unit(0.16, "cm")),
+    linewidth = 0.45
+  ) +
+  geom_segment(
+    aes(x = 0, xend = 0, y = 3.97, yend = 3.48),
+    arrow = arrow(length = unit(0.16, "cm")),
+    linewidth = 0.45
+  ) +
+  geom_segment(
+    aes(x = 0, xend = 0, y = 2.72, yend = 2.23),
+    arrow = arrow(length = unit(0.16, "cm")),
+    linewidth = 0.45
+  ) +
+  
+  # Split arrows to PHQ groups
+  geom_segment(
+    aes(x = 0, xend = -1.75, y = 1.47, yend = 0.90),
+    arrow = arrow(length = unit(0.16, "cm")),
+    linewidth = 0.45
+  ) +
+  geom_segment(
+    aes(x = 0, xend = 1.75, y = 1.47, yend = 0.90),
+    arrow = arrow(length = unit(0.16, "cm")),
+    linewidth = 0.45
+  ) +
+  
+  # Dashed exclusion arrows
+  geom_segment(
+    aes(x = 1.75, xend = 1.90, y = 5.6, yend = 5.6),
+    arrow = arrow(length = unit(0.13, "cm")),
+    color = "#D95F02",
+    linewidth = 0.45,
+    linetype = "dashed"
+  ) +
+  geom_segment(
+    aes(x = 1.75, xend = 1.90, y = 4.35, yend = 4.35),
+    arrow = arrow(length = unit(0.13, "cm")),
+    color = "#D95F02",
+    linewidth = 0.45,
+    linetype = "dashed"
+  ) +
+  geom_segment(
+    aes(x = 1.75, xend = 1.90, y = 3.1, yend = 3.1),
+    arrow = arrow(length = unit(0.13, "cm")),
+    color = "#D95F02",
+    linewidth = 0.45,
+    linetype = "dashed"
+  ) +
+  
+  # Dashed arrow from MI sample to complete-case side box
+  geom_segment(
+    aes(x = 1.75, xend = 1.80, y = 1.85, yend = 1.85),
+    arrow = arrow(length = unit(0.13, "cm")),
+    color = "grey35",
+    linewidth = 0.45,
+    linetype = "dashed"
+  ) +
+  
+  coord_cartesian(
+    xlim = c(-3.3, 4.85),
+    ylim = c(0.0, 6.15),
+    clip = "off"
+  ) +
+  theme_void(base_size = 12) +
+  theme(
+    plot.background = element_rect(fill = "white", color = NA),
+    plot.margin = margin(12, 12, 12, 12)
+  )
+
+# =============================================================================
+# Save
+# =============================================================================
+
+ggsave(
+  filename = file.path(fig_dir, "Figure1_Participant_Flowchart.tiff"),
+  plot = p_flow,
+  width = 8.5,
+  height = 6.4,
+  units = "in",
+  dpi = 600,
+  compression = "lzw"
+)
+
+ggsave(
+  filename = file.path(fig_dir, "Figure1_Participant_Flowchart.pdf"),
+  plot = p_flow,
+  width = 8.5,
+  height = 6.4,
+  units = "in"
+)
+
+cat("Figure 1 flowchart saved successfully:\n")
+cat(file.path(fig_dir, "Figure1_Participant_Flowchart.tiff"), "\n")
+
+
+################################################################################
+# SCRIPT: 13. Publication-ready Tables for NHANES Manuscript
+#
+# Outputs:
+#   1. Table1_Main_MI_Eligible.csv
+#   2. TableS1_Included_vs_Excluded_SMD.csv
+#   3. TableS2_MI_Covariate_Missingness.csv
+#   4. TableS4_CompleteCase_Table1.csv
+#
+# Main updates:
+#   - Fixed Unicode issues (direct UTF-8 symbols used)
+#   - Added 18–19 years age group
+#   - Standardized publication-ready table headers
+#   - MI = primary analysis
+#   - Complete-case = exploratory spline analyses
+################################################################################
+
+library(tidyverse)
+library(survey)
+library(forcats)
+
+options(survey.lonely.psu = "adjust")
+
+base_path <- "D:/code"
+setwd(base_path)
+
+qc_dir <- file.path(base_path, "qc_outputs")
+if (!dir.exists(qc_dir)) {
+  dir.create(qc_dir, recursive = TRUE)
+}
+
+# =============================================================================
+# Load datasets
+# =============================================================================
+
+df_raw <- readRDS("11.Dataset.rds")
+
+df_mi <- readRDS("12.Dataset_MI_Eligible.rds")
+
+df_cc <- readRDS("12.Dataset_CompleteCase.rds")
+
+# =============================================================================
+# Helper functions
+# =============================================================================
+
+fmt_p <- function(p) {
+  if (is.na(p)) return("—")
+  if (p < 0.001) return("<0.001")
+  sprintf("%.3f", p)
+}
+
+add_missing_level <- function(x) {
+  x <- factor(x)
+  forcats::fct_na_value_to_level(x, level = "Missing")
+}
+
+fmt_n_pct <- function(n, pct) {
+  sprintf("%d (%.2f%%)", n, pct)
+}
+
+fmt_mean_sd <- function(x) {
+  x <- x[!is.na(x)]
+  
+  if (length(x) == 0) return("—")
+  
+  sprintf("%.1f (%.1f)", mean(x), sd(x))
+}
+
+weighted_pct <- function(design, var, level, group = NULL) {
+  
+  d <- design
+  
+  if (!is.null(group)) {
+    d <- subset(d, PHQ9_group == group)
+  }
+  
+  tab <- svytable(as.formula(paste0("~", var)), d)
+  
+  if (!(level %in% names(tab))) return(0)
+  
+  as.numeric(tab[level] / sum(tab) * 100)
+}
+
+# =============================================================================
+# Prepare publication-ready variables
+# =============================================================================
+
+prepare_table_data <- function(data) {
+  
+  data %>%
+    mutate(
+      
+      # -----------------------------------------------------------------------
+      # PHQ-9 group
+      # -----------------------------------------------------------------------
+      
+      PHQ9_group = factor(
+        PHQ9_depression_above_10,
+        levels = c(0, 1),
+        labels = c("PHQ-9 <10", "PHQ-9 ≥10")
+      ),
+      
+      # -----------------------------------------------------------------------
+      # Age group
+      # -----------------------------------------------------------------------
+      
+      # -----------------------------------------------------------------------
+      # Age group
+      # -----------------------------------------------------------------------
+      
+      age_group_pub = case_when(
+        !is.na(RIDAGEYR) & RIDAGEYR >= 18 & RIDAGEYR < 40 ~ "18–39 years",
+        !is.na(RIDAGEYR) & RIDAGEYR >= 40 & RIDAGEYR < 60 ~ "40–59 years",
+        !is.na(RIDAGEYR) & RIDAGEYR >= 60 ~ "≥60 years",
+        TRUE ~ NA_character_
+      ),
+      
+      age_group_pub = factor(
+        age_group_pub,
+        levels = c(
+          "18–39 years",
+          "40–59 years",
+          "≥60 years"
+        )
+      ) %>%
+        add_missing_level(),
+      
+      # -----------------------------------------------------------------------
+      # Sex
+      # -----------------------------------------------------------------------
+      
+      sex_f = factor(
+        sex,
+        levels = c("Male", "Female")
+      ) %>%
+        add_missing_level(),
+      
+      # -----------------------------------------------------------------------
+      # Race
+      # -----------------------------------------------------------------------
+      
+      race_f = add_missing_level(race_ethnicity),
+      
+      # -----------------------------------------------------------------------
+      # Education
+      # -----------------------------------------------------------------------
+      
+      education_f = add_missing_level(education),
+      
+      # -----------------------------------------------------------------------
+      # Marital status
+      # -----------------------------------------------------------------------
+      
+      marital_f = add_missing_level(marital_status),
+      
+      # -----------------------------------------------------------------------
+      # Smoking
+      # -----------------------------------------------------------------------
+      
+      smoking_f = factor(
+        smoke_status,
+        levels = c(0, 1, 2),
+        labels = c(
+          "Never smoker",
+          "Former smoker",
+          "Current smoker"
+        )
+      ) %>%
+        add_missing_level(),
+      
+      # -----------------------------------------------------------------------
+      # Alcohol
+      # -----------------------------------------------------------------------
+      
+      alcohol_f = factor(
+        Alcohol_Status,
+        levels = c(0, 1, 2),
+        labels = c(
+          "Never",
+          "Non-heavy ever drinker",
+          "Heavy alcohol use"
+        )
+      ) %>%
+        add_missing_level(),
+      
+      # -----------------------------------------------------------------------
+      # Work status
+      # -----------------------------------------------------------------------
+      
+      work_f = factor(
+        work_status,
+        levels = c(0, 1),
+        labels = c(
+          "Currently employed",
+          "Not currently working"
+        )
+      ) %>%
+        add_missing_level(),
+      
+      # -----------------------------------------------------------------------
+      # Diabetes
+      # -----------------------------------------------------------------------
+      
+      diabetes_f = factor(
+        diabetes_or_prediabetes,
+        levels = c(0, 1),
+        labels = c(
+          "No",
+          "Diabetes/prediabetes"
+        )
+      ) %>%
+        add_missing_level(),
+      
+      # -----------------------------------------------------------------------
+      # Hypertension
+      # -----------------------------------------------------------------------
+      
+      htn_f = factor(
+        htn_status,
+        levels = c(0, 1),
+        labels = c(
+          "No",
+          "Yes"
+        )
+      ) %>%
+        add_missing_level(),
+      
+      # -----------------------------------------------------------------------
+      # PIR
+      # -----------------------------------------------------------------------
+      
+      PIR_cat_f = add_missing_level(PIR_cat),
+      
+      # -----------------------------------------------------------------------
+      # BMI
+      # -----------------------------------------------------------------------
+      
+      BMI_cat_f = factor(
+        BMI_cat,
+        levels = c(
+          "Underweight",
+          "Normal",
+          "Overweight",
+          "Obese"
+        ),
+        labels = c(
+          "Underweight",
+          "Normal weight",
+          "Overweight",
+          "Obesity"
+        )
+      ) %>%
+        add_missing_level(),
+      
+      # -----------------------------------------------------------------------
+      # Weekday sleep duration
+      # -----------------------------------------------------------------------
+      
+      dur_wd_cat_f = factor(
+        dur_wd_cat,
+        levels = c(
+          "7-9 hours",
+          "<7 hours",
+          "≥9 hours"
+        ),
+        labels = c(
+          "7–9 h",
+          "<7 h",
+          "≥9 h"
+        )
+      ) %>%
+        add_missing_level(),
+      
+      # -----------------------------------------------------------------------
+      # Weekend sleep duration
+      # -----------------------------------------------------------------------
+      
+      dur_we_cat_f = factor(
+        dur_we_cat,
+        levels = c(
+          "7-9 hours",
+          "<7 hours",
+          "≥9 hours"
+        ),
+        labels = c(
+          "7–9 h",
+          "<7 h",
+          "≥9 h"
+        )
+      ) %>%
+        add_missing_level(),
+      
+      # -----------------------------------------------------------------------
+      # Physical activity
+      # -----------------------------------------------------------------------
+      
+      MET_cat_f = add_missing_level(MET_cat_label),
+      
+      # -----------------------------------------------------------------------
+      # Sedentary time
+      # -----------------------------------------------------------------------
+      
+      sedentary_cat_f = factor(
+        sedentary_cat_label,
+        levels = c("<6h", "6-8h", ">8h"),
+        labels = c(
+          "<6 h/day",
+          "6–8 h/day",
+          ">8 h/day"
+        )
+      ) %>%
+        add_missing_level()
+    )
+}
+
+# =============================================================================
+# Main Table 1 builder
+# =============================================================================
+
+make_table1 <- function(
+    data,
+    output_name,
+    remove_zero_missing = TRUE
+) {
+  
+  data <- prepare_table_data(data)
+  
+  design <- svydesign(
+    id = ~SDMVPSU,
+    strata = ~SDMVSTRA,
+    weights = ~mec_adj,
+    nest = TRUE,
+    data = data
+  )
+  
+  table_vars <- c(
+    "sex_f",
+    "age_group_pub",
+    "race_f",
+    "education_f",
+    "marital_f",
+    "PIR_cat_f",
+    "BMI_cat_f",
+    "smoking_f",
+    "alcohol_f",
+    "work_f",
+    "diabetes_f",
+    "htn_f",
+    "dur_wd_cat_f",
+    "dur_we_cat_f",
+    "MET_cat_f",
+    "sedentary_cat_f"
+  )
+  
+  var_labels <- c(
+    sex_f = "Sex",
+    age_group_pub = "Age group",
+    race_f = "Race/ethnicity",
+    education_f = "Education",
+    marital_f = "Marital status",
+    PIR_cat_f = "Family income-to-poverty ratio",
+    BMI_cat_f = "BMI category",
+    smoking_f = "Smoking status",
+    alcohol_f = "Alcohol use",
+    work_f = "Work status",
+    diabetes_f = "Diabetes/prediabetes",
+    htn_f = "Hypertension",
+    dur_wd_cat_f = "Weekday sleep duration",
+    dur_we_cat_f = "Weekend sleep duration",
+    MET_cat_f = "Leisure-time physical activity",
+    sedentary_cat_f = "Sedentary time"
+  )
+  
+  dep_tab <- table(data$PHQ9_group)
+  
+  results <- list()
+  
+  # ---------------------------------------------------------------------------
+  # N row
+  # ---------------------------------------------------------------------------
+  
+  results[[1]] <- tibble(
+    Characteristic = "N",
+    Overall = as.character(nrow(data)),
+    PHQ9_lt10 = as.character(dep_tab["PHQ-9 <10"]),
+    PHQ9_ge10 = as.character(dep_tab["PHQ-9 ≥10"]),
+    P_value = ""
+  )
+  
+  # ---------------------------------------------------------------------------
+  # Variables
+  # ---------------------------------------------------------------------------
+  
+  for (var in table_vars) {
+    
+    p <- tryCatch(
+      
+      svychisq(
+        as.formula(paste0("~", var, " + PHQ9_group")),
+        design = design,
+        statistic = "Wald"
+      )$p.value,
+      
+      error = function(e) NA_real_
+    )
+    
+    results[[length(results) + 1]] <- tibble(
+      Characteristic = var_labels[[var]],
+      Overall = "",
+      PHQ9_lt10 = "",
+      PHQ9_ge10 = "",
+      P_value = fmt_p(p)
+    )
+    
+    for (lv in levels(data[[var]])) {
+      
+      n_all <- sum(data[[var]] == lv, na.rm = TRUE)
+      
+      n_no <- sum(
+        data[[var]] == lv &
+          data$PHQ9_group == "PHQ-9 <10",
+        na.rm = TRUE
+      )
+      
+      n_yes <- sum(
+        data[[var]] == lv &
+          data$PHQ9_group == "PHQ-9 ≥10",
+        na.rm = TRUE
+      )
+      
+      if (
+        remove_zero_missing &&
+        lv == "Missing" &&
+        n_all == 0 &&
+        n_no == 0 &&
+        n_yes == 0
+      ) next
+      
+      pct_all <- weighted_pct(design, var, lv)
+      
+      pct_no <- weighted_pct(
+        design,
+        var,
+        lv,
+        "PHQ-9 <10"
+      )
+      
+      pct_yes <- weighted_pct(
+        design,
+        var,
+        lv,
+        "PHQ-9 ≥10"
+      )
+      
+      results[[length(results) + 1]] <- tibble(
+        Characteristic = paste0("  ", lv),
+        Overall = fmt_n_pct(n_all, pct_all),
+        PHQ9_lt10 = fmt_n_pct(n_no, pct_no),
+        PHQ9_ge10 = fmt_n_pct(n_yes, pct_yes),
+        P_value = ""
+      )
+    }
+  }
+  
+  # ---------------------------------------------------------------------------
+  # Final table
+  # ---------------------------------------------------------------------------
+  
+  table1 <- bind_rows(results) %>%
+    rename(
+      `PHQ-9 <10` = PHQ9_lt10,
+      `PHQ-9 ≥10` = PHQ9_ge10,
+      `P value` = P_value
+    )
+  
+  write.csv(
+    table1,
+    file.path(base_path, output_name),
+    row.names = FALSE,
+    na = "",
+    fileEncoding = "UTF-8"
+  )
+  
+  # ---------------------------------------------------------------------------
+  # Console summary
+  # ---------------------------------------------------------------------------
+  
+  weighted_pop <- sum(weights(design))
+  
+  weighted_dep <- svytable(~PHQ9_group, design)
+  
+  cat("\nSaved:", output_name, "\n")
+  
+  cat("Unweighted N:",
+      nrow(data),
+      "\n")
+  
+  cat(
+    "Weighted population:",
+    format(round(weighted_pop), big.mark = ","),
+    "\n"
+  )
+  
+  cat(
+    "Weighted depressive symptoms:",
+    format(round(weighted_dep["PHQ-9 ≥10"]), big.mark = ","),
+    sprintf(
+      "(%.2f%%)\n",
+      prop.table(weighted_dep)["PHQ-9 ≥10"] * 100
+    )
+  )
+  
+  invisible(table1)
+}
+
+# =============================================================================
+# Generate main Table 1
+# =============================================================================
+
+table1_main <- make_table1(
+  data = df_mi,
+  output_name = "Table1_Main_MI_Eligible.csv",
+  remove_zero_missing = TRUE
+)
+
+# =============================================================================
+# Generate complete-case Table S4
+# =============================================================================
+
+table1_cc <- make_table1(
+  data = df_cc,
+  output_name = "TableS4_CompleteCase_Table1.csv",
+  remove_zero_missing = TRUE
+)
+
+# =============================================================================
+# Table S1: Included vs excluded comparison with SMD
+# =============================================================================
+
+cat("\nGenerating Table S1...\n")
+
+df_raw_smd <- df_raw %>%
+  mutate(
+    
+    inclusion_group = factor(
+      ifelse(SEQN %in% df_mi$SEQN,
+             "Included",
+             "Excluded"),
+      levels = c("Included", "Excluded")
+    ),
+    
+    age_cont = RIDAGEYR,
+    
+    bmi_cont = BMI_value,
+    
+    sex_f = factor(sex),
+    
+    race_f = factor(race_ethnicity),
+    
+    education_f = factor(education),
+    
+    marital_f = factor(marital_status),
+    
+    smoking_f = factor(
+      smoke_status,
+      levels = c(0, 1, 2),
+      labels = c(
+        "Never smoker",
+        "Former smoker",
+        "Current smoker"
+      )
+    ),
+    
+    alcohol_f = factor(
+      Alcohol_Status,
+      levels = c(0, 1, 2),
+      labels = c(
+        "Never",
+        "Non-heavy ever drinker",
+        "Heavy alcohol use"
+      )
+    ),
+    
+    diabetes_f = factor(
+      diabetes_or_prediabetes,
+      levels = c(0, 1),
+      labels = c(
+        "No",
+        "Diabetes/prediabetes"
+      )
+    ),
+    
+    htn_f = factor(
+      htn_status,
+      levels = c(0, 1),
+      labels = c(
+        "No",
+        "Yes"
+      )
+    ),
+    
+    work_f = factor(
+      work_status,
+      levels = c(0, 1),
+      labels = c(
+        "Currently employed",
+        "Not currently working"
+      )
+    ),
+    
+    phq_available = factor(
+      !is.na(PHQ9_SCORE),
+      levels = c(TRUE, FALSE),
+      labels = c(
+        "Available",
+        "Missing"
+      )
+    ),
+    
+    sleep_available = factor(
+      !is.na(sleep_onset_wd_min) &
+        !is.na(wake_time_wd_min) &
+        !is.na(midpoint_wd_min) &
+        !is.na(sleep_onset_we_min) &
+        !is.na(wake_time_we_min) &
+        !is.na(midpoint_we_min),
+      
+      levels = c(TRUE, FALSE),
+      
+      labels = c(
+        "Complete",
+        "Incomplete/missing"
+      )
+    )
+  )
+
+incl <- df_raw_smd %>%
+  filter(inclusion_group == "Included")
+
+excl <- df_raw_smd %>%
+  filter(inclusion_group == "Excluded")
+
+# =============================================================================
+# SMD functions
+# =============================================================================
+
+fmt_n_pct_raw <- function(n, denom) {
+  
+  if (is.na(denom) || denom == 0) return("—")
+  
+  sprintf(
+    "%d (%.1f%%)",
+    n,
+    100 * n / denom
+  )
+}
+
+smd_cont <- function(x, group) {
+  
+  g <- levels(group)
+  
+  x1 <- x[group == g[1] & !is.na(x)]
+  
+  x2 <- x[group == g[2] & !is.na(x)]
+  
+  if (length(x1) < 2 || length(x2) < 2) {
+    return(NA_real_)
+  }
+  
+  pooled_sd <- sqrt(
+    (
+      ((length(x1) - 1) * var(x1)) +
+        ((length(x2) - 1) * var(x2))
+    ) /
+      (length(x1) + length(x2) - 2)
+  )
+  
+  if (is.na(pooled_sd) || pooled_sd == 0) {
+    return(0)
+  }
+  
+  abs(mean(x1) - mean(x2)) / pooled_sd
+}
+
+smd_binary <- function(p1, p2) {
+  
+  if (any(is.na(c(p1, p2)))) {
+    return(NA_real_)
+  }
+  
+  abs(
+    2 * asin(sqrt(p1)) -
+      2 * asin(sqrt(p2))
+  )
+}
+
+smd_cat <- function(x, group) {
+  
+  x <- factor(x)
+  
+  g <- levels(group)
+  
+  smds <- sapply(levels(x), function(lv) {
+    
+    p1 <- mean(
+      x[group == g[1]] == lv,
+      na.rm = TRUE
+    )
+    
+    p2 <- mean(
+      x[group == g[2]] == lv,
+      na.rm = TRUE
+    )
+    
+    smd_binary(p1, p2)
+  })
+  
+  max(smds, na.rm = TRUE)
+}
+
+safe_chisq <- function(x, group) {
+  
+  tbl <- table(
+    x,
+    group,
+    useNA = "no"
+  )
+  
+  tryCatch(
+    
+    chisq.test(
+      tbl,
+      simulate.p.value = TRUE,
+      B = 5000
+    )$p.value,
+    
+    error = function(e) NA_real_
+  )
+}
+
+safe_ttest <- function(x, group) {
+  
+  g <- levels(group)
+  
+  tryCatch(
+    
+    t.test(
+      x[group == g[1]],
+      x[group == g[2]]
+    )$p.value,
+    
+    error = function(e) NA_real_
+  )
+}
+
+# =============================================================================
+# Build Table S1
+# =============================================================================
+
+smd_rows <- list()
+
+add_smd_row <- function(
+    characteristic,
+    total,
+    included,
+    excluded,
+    p_value = "",
+    smd = ""
+) {
+  
+  smd_rows[[length(smd_rows) + 1]] <<- tibble(
+    Characteristic = characteristic,
+    Total = total,
+    Included = included,
+    Excluded = excluded,
+    `P value` = p_value,
+    SMD = smd
+  )
+}
+
+add_smd_section <- function(label) {
+  
+  add_smd_row(
+    label,
+    "",
+    "",
+    "",
+    "",
+    ""
+  )
+}
+
+add_smd_cont <- function(label, var) {
+  
+  p <- safe_ttest(
+    df_raw_smd[[var]],
+    df_raw_smd$inclusion_group
+  )
+  
+  s <- smd_cont(
+    df_raw_smd[[var]],
+    df_raw_smd$inclusion_group
+  )
+  
+  add_smd_section(label)
+  
+  add_smd_row(
+    "  Mean (SD)",
+    fmt_mean_sd(df_raw_smd[[var]]),
+    fmt_mean_sd(incl[[var]]),
+    fmt_mean_sd(excl[[var]]),
+    fmt_p(p),
+    sprintf("%.3f", s)
+  )
+}
+
+add_smd_cat <- function(label, var) {
+  
+  x_total <- factor(df_raw_smd[[var]])
+  
+  x_inc <- factor(
+    incl[[var]],
+    levels = levels(x_total)
+  )
+  
+  x_exc <- factor(
+    excl[[var]],
+    levels = levels(x_total)
+  )
+  
+  p <- safe_chisq(
+    x_total,
+    df_raw_smd$inclusion_group
+  )
+  
+  s <- smd_cat(
+    x_total,
+    df_raw_smd$inclusion_group
+  )
+  
+  add_smd_section(label)
+  
+  denom_total <- sum(!is.na(x_total))
+  
+  denom_inc <- sum(!is.na(x_inc))
+  
+  denom_exc <- sum(!is.na(x_exc))
+  
+  for (i in seq_along(levels(x_total))) {
+    
+    lv <- levels(x_total)[i]
+    
+    add_smd_row(
+      paste0("  ", lv),
+      
+      fmt_n_pct_raw(
+        sum(x_total == lv, na.rm = TRUE),
+        denom_total
+      ),
+      
+      fmt_n_pct_raw(
+        sum(x_inc == lv, na.rm = TRUE),
+        denom_inc
+      ),
+      
+      fmt_n_pct_raw(
+        sum(x_exc == lv, na.rm = TRUE),
+        denom_exc
+      ),
+      
+      ifelse(i == 1, fmt_p(p), ""),
+      
+      ifelse(i == 1,
+             sprintf("%.3f", s),
+             "")
+    )
+  }
+}
+
+# =============================================================================
+# Add rows
+# =============================================================================
+
+add_smd_row(
+  "N",
+  as.character(nrow(df_raw_smd)),
+  as.character(nrow(incl)),
+  as.character(nrow(excl))
+)
+
+add_smd_cont("Age, years", "age_cont")
+
+add_smd_cat("Sex", "sex_f")
+
+add_smd_cat("Race/ethnicity", "race_f")
+
+add_smd_cat("Education", "education_f")
+
+add_smd_cont("BMI, kg/m²", "bmi_cont")
+
+add_smd_cat("Marital status", "marital_f")
+
+add_smd_cat("Smoking status", "smoking_f")
+
+add_smd_cat("Alcohol use", "alcohol_f")
+
+add_smd_cat("Diabetes/prediabetes", "diabetes_f")
+
+add_smd_cat("Hypertension", "htn_f")
+
+add_smd_cat("Work status", "work_f")
+
+add_smd_cat("PHQ-9 availability", "phq_available")
+
+add_smd_cat(
+  "Core sleep variable availability",
+  "sleep_available"
+)
+
+table_s1 <- bind_rows(smd_rows)
+
+write.csv(
+  table_s1,
+  file.path(
+    base_path,
+    "TableS1_Included_vs_Excluded_SMD.csv"
+  ),
+  row.names = FALSE,
+  na = "",
+  fileEncoding = "UTF-8"
+)
+
+cat(
+  "Saved: TableS1_Included_vs_Excluded_SMD.csv\n"
+)
+
+# =============================================================================
+# Table S2: Missingness before MI
+# =============================================================================
+
+cat("\nGenerating Table S2...\n")
+
+mi_covariates <- c(
+  "RIDAGEYR",
+  "sex",
+  "race_ethnicity",
+  "education",
+  "marital_status",
+  "INDFMPIR",
+  "PIR_cat",
+  "BMI_value",
+  "BMI_cat",
+  "smoke_status",
+  "Alcohol_Status",
+  "diabetes_or_prediabetes",
+  "htn_status",
+  "work_status",
+  "MET_total",
+  "MET_cat_label",
+  "sedentary_min",
+  "sedentary_cat_label"
+)
+
+missing_labels <- c(
+  RIDAGEYR = "Age",
+  sex = "Sex",
+  race_ethnicity = "Race/ethnicity",
+  education = "Education",
+  marital_status = "Marital status",
+  INDFMPIR = "Family income-to-poverty ratio",
+  PIR_cat = "PIR category",
+  BMI_value = "BMI",
+  BMI_cat = "BMI category",
+  smoke_status = "Smoking status",
+  Alcohol_Status = "Alcohol use",
+  diabetes_or_prediabetes = "Diabetes/prediabetes",
+  htn_status = "Hypertension",
+  work_status = "Work status",
+  MET_total = "Leisure-time physical activity, MET-min/week",
+  MET_cat_label = "Leisure-time physical activity category",
+  sedentary_min = "Sedentary time, min/day",
+  sedentary_cat_label = "Sedentary time category"
+)
+
+table_s2 <- tibble(
+  Variable = mi_covariates,
+  
+  Label = missing_labels[mi_covariates],
+  
+  Missing_n = map_int(
+    mi_covariates,
+    ~ sum(is.na(df_mi[[.x]]))
+  ),
+  
+  Total_N = nrow(df_mi),
+  
+  Missing_percent = round(
+    100 * Missing_n / Total_N,
+    2
+  )
+) %>%
+  arrange(
+    desc(Missing_percent),
+    Variable
+  )
+
+write.csv(
+  table_s2,
+  file.path(
+    base_path,
+    "TableS2_MI_Covariate_Missingness.csv"
+  ),
+  row.names = FALSE,
+  na = "",
+  fileEncoding = "UTF-8"
+)
+
+cat(
+  "Saved: TableS2_MI_Covariate_Missingness.csv\n"
+)
+
+# =============================================================================
+# Final summary
+# =============================================================================
+
+cat("\nAll publication-ready tables generated successfully.\n")
+
+cat(
+  "Main Table 1: Table1_Main_MI_Eligible.csv\n"
+)
+
+cat(
+  "Table S1: TableS1_Included_vs_Excluded_SMD.csv\n"
+)
+
+cat(
+  "Table S2: TableS2_MI_Covariate_Missingness.csv\n"
+)
+
+cat(
+  "Table S4: TableS4_CompleteCase_Table1.csv\n"
+)
+
+summary(df_raw$RIDAGEYR)
+table(df_raw$RIDAGEYR < 18, useNA="always")
+
+################################################################################
+# STEP 13A
+# CREATE LEGACY RCS-COMPATIBLE DATASET
+#
+# PURPOSE:
+#   Convert new harmonized complete-case dataset
+#   into old variable naming structure so that:
+#
+#   - original svyggrcs1.8R.R workflow works unchanged
+#   - original 6-RCS framework works unchanged
+#   - original scoring framework remains reproducible
+#
+# OUTPUT:
+#   D:/code/13A.Dataset_RCS_Compatible.rds
+#
+# THIS STEP HANDLES:
+#   1. variable name back-conversion
+#   2. factor formatting
+#   3. legacy exposure aliases
+#   4. old depression variable aliases
+#   5. old covariate naming
+#
+################################################################################
+
+# ==============================================================================
+# 1. Libraries
+# ==============================================================================
+
+library(dplyr)
+
+# ==============================================================================
+# 2. Paths
+# ==============================================================================
+
+base_path <- "D:/code"
+
+input_path <- file.path(
+  base_path,
+  "12.Dataset_CompleteCase.rds"
+)
+
+output_path <- file.path(
+  base_path,
+  "13A.Dataset_RCS_Compatible.rds"
+)
+
+# ==============================================================================
+# 3. Load Data
+# ==============================================================================
+
+df <- readRDS(input_path)
+
+cat("\nDataset loaded:\n")
+cat("N =", nrow(df), "\n")
+cat("Variables =", ncol(df), "\n\n")
+
+# ==============================================================================
+# 4. Rebuild Legacy RCS-Compatible Structure
+# ==============================================================================
+
+df_rcs <- df %>%
+  
+  mutate(
+    
+    # ==========================================================================
+    # 4.1 ORIGINAL 6 SLEEP TIMING VARIABLES
+    # ==========================================================================
+    
+    # Original hour-based names used in old RCS scripts
+    
+    midpoint_wd = midpoint_wd_hour,
+    midpoint_we = midpoint_we_hour,
+    
+    sleep_onset_wd = sleep_onset_wd_hour,
+    sleep_onset_we = sleep_onset_we_hour,
+    
+    wake_time_wd = wake_time_wd_hour,
+    wake_time_we = wake_time_we_hour,
+    
+    # ==========================================================================
+    # 4.2 LEGACY ALIAS VARIABLES
+    # ==========================================================================
+    
+    sleep_midpoint_weekday_hours = midpoint_wd_hour,
+    sleep_midpoint_weekend_hours = midpoint_we_hour,
+    
+    sleep_onset_weekday_hours = sleep_onset_wd_hour,
+    sleep_onset_weekend_hours = sleep_onset_we_hour,
+    
+    wake_time_weekday_hours = wake_time_wd_hour,
+    wake_time_weekend_hours = wake_time_we_hour,
+    
+    # ==========================================================================
+    # 4.3 DEPRESSION VARIABLES
+    # ==========================================================================
+    
+    Moderate_depression_above =
+      PHQ9_depression_above_10,
+    
+    ModSevere_depression_above =
+      PHQ9_depression_above_15,
+    
+    # ==========================================================================
+    # 4.4 DEMOGRAPHICS
+    # ==========================================================================
+    
+    sex = factor(sex),
+    
+    race_ethnicity = factor(race_ethnicity),
+    
+    education = factor(education),
+    
+    marital_status = factor(marital_status),
+    
+    # ==========================================================================
+    # 4.5 SMOKING
+    # ==========================================================================
+    
+    smoke_status = factor(
+      smoke_status,
+      levels = c(0, 1, 2),
+      labels = c(
+        "Never Smoker",
+        "Former Smoker",
+        "Current Smoker"
+      )
+    ),
+    
+    # ==========================================================================
+    # 4.6 ALCOHOL
+    # ==========================================================================
+    
+    AlcoholCategory = factor(
+      Alcohol_Status,
+      levels = c(0, 1, 2),
+      labels = c(
+        "Never",
+        "Light/Moderate",
+        "Heavy"
+      )
+    ),
+    
+    # ==========================================================================
+    # 4.7 DIABETES
+    # ==========================================================================
+    
+    diabetes_status = factor(
+      diabetes_or_prediabetes,
+      levels = c(0, 1),
+      labels = c(
+        "No",
+        "Borderline/Yes"
+      )
+    ),
+    
+    # ==========================================================================
+    # 4.8 HYPERTENSION
+    # ==========================================================================
+    
+    hypertension_status = factor(
+      htn_status,
+      levels = c(0, 1),
+      labels = c(
+        "No",
+        "Yes"
+      )
+    ),
+    
+    # ==========================================================================
+    # 4.9 WORK STATUS
+    # ==========================================================================
+    
+    work_status = factor(
+      work_status,
+      levels = c(0, 1),
+      labels = c(
+        "Working",
+        "Not Working"
+      )
+    ),
+    
+    # ==========================================================================
+    # 4.10 ENSURE NUMERIC TYPES
+    # ==========================================================================
+    
+    midpoint_wd = as.numeric(midpoint_wd),
+    midpoint_we = as.numeric(midpoint_we),
+    
+    sleep_onset_wd = as.numeric(sleep_onset_wd),
+    sleep_onset_we = as.numeric(sleep_onset_we),
+    
+    wake_time_wd = as.numeric(wake_time_wd),
+    wake_time_we = as.numeric(wake_time_we),
+    
+    sleep_midpoint_weekday_hours =
+      as.numeric(sleep_midpoint_weekday_hours),
+    
+    sleep_midpoint_weekend_hours =
+      as.numeric(sleep_midpoint_weekend_hours),
+    
+    sleep_onset_weekday_hours =
+      as.numeric(sleep_onset_weekday_hours),
+    
+    sleep_onset_weekend_hours =
+      as.numeric(sleep_onset_weekend_hours),
+    
+    wake_time_weekday_hours =
+      as.numeric(wake_time_weekday_hours),
+    
+    wake_time_weekend_hours =
+      as.numeric(wake_time_weekend_hours)
+    
+  )
+
+# ==============================================================================
+# 5. QC — Verify Core RCS Variables
+# ==============================================================================
+
+cat("\n================ QC CHECK ================\n")
+
+core_vars <- c(
+  
+  # Original names
+  "midpoint_wd",
+  "midpoint_we",
+  "sleep_onset_wd",
+  "sleep_onset_we",
+  "wake_time_wd",
+  "wake_time_we",
+  
+  # Legacy aliases
+  "sleep_midpoint_weekday_hours",
+  "sleep_midpoint_weekend_hours",
+  "sleep_onset_weekday_hours",
+  "sleep_onset_weekend_hours",
+  "wake_time_weekday_hours",
+  "wake_time_weekend_hours",
+  
+  # Depression
+  "Moderate_depression_above",
+  "ModSevere_depression_above",
+  
+  # Survey
+  "SDMVPSU",
+  "SDMVSTRA",
+  "mec_adj"
+)
+
+for (v in core_vars) {
+  
+  cat(
+    v,
+    " | missing = ",
+    sum(is.na(df_rcs[[v]])),
+    "\n",
+    sep = ""
+  )
+}
+
+# ==============================================================================
+# 6. Distribution QC
+# ==============================================================================
+
+cat("\n================ DISTRIBUTION QC ================\n")
+
+dist_vars <- c(
+  "midpoint_wd",
+  "midpoint_we",
+  "sleep_onset_wd",
+  "sleep_onset_we",
+  "wake_time_wd",
+  "wake_time_we"
+)
+
+for (v in dist_vars) {
+  
+  cat("\n-----------------------------\n")
+  cat(v, "\n")
+  
+  print(
+    summary(df_rcs[[v]])
+  )
+}
+
+# ==============================================================================
+# 7. Depression Counts
+# ==============================================================================
+
+cat("\n================ DEPRESSION COUNTS ================\n")
+
+cat(
+  "\nPHQ-9 >=10:\n"
+)
+
+print(
+  table(
+    df_rcs$Moderate_depression_above,
+    useNA = "always"
+  )
+)
+
+cat(
+  "\nPHQ-9 >=15:\n"
+)
+
+print(
+  table(
+    df_rcs$ModSevere_depression_above,
+    useNA = "always"
+  )
+)
+
+# ==============================================================================
+# 8. Save Dataset
+# ==============================================================================
+
+saveRDS(
+  df_rcs,
+  output_path
+)
+
+cat("\nCompatible RCS dataset saved:\n")
+cat(output_path, "\n")
+
+# ==============================================================================
+# 9. Final Summary
+# ==============================================================================
+
+cat("\n================ FINAL SUMMARY ================\n")
+
+cat(
+  "Final N =",
+  nrow(df_rcs),
+  "\n"
+)
+
+cat(
+  "Final variables =",
+  ncol(df_rcs),
+  "\n"
+)
+
+cat(
+  "\nThis dataset is now compatible with:\n"
+)
+
+cat(
+  "- original svyggrcs1.8R.R\n"
+)
+
+cat(
+  "- original 6-variable RCS pipeline\n"
+)
+
+cat(
+  "- original score construction workflow\n"
+)
+
+cat(
+  "- original nadir extraction workflow\n"
+)
+
+cat(
+  "- original threshold classification workflow\n"
+)
+
+cat(
+  "- original Figure 2 generation\n"
+)
+
+cat(
+  "\nSTEP 13A COMPLETED SUCCESSFULLY\n"
+)
+
+################################################################################
+# STEP 13B. Continuous Sleep Rhythm Disruption Index Construction
+#
+# Main analysis:
+#   MI analytic cohort
+#
+# Reference derivation:
+#   Derived internally from MI analytic cohort
+#
+# Primary exposure:
+#   Continuous multidimensional sleep rhythm disruption index
+#
+# Sensitivity exposure:
+#   P10-P90 binary disruption burden score (0-6)
+################################################################################
+
+
+library(tidyverse)
+
+
+# ==============================================================================
+# Path
+# ==============================================================================
+
+base_path <- "D:/code"
+
+
+MI_file <- file.path(
+  base_path,
+  "12.Dataset_MI_Eligible.rds"
+)
+
+
+output_file <- file.path(
+  base_path,
+  "13B.Dataset_MI_Sleep_Rhythm_Index.rds"
+)
+
+
+qc_dir <- file.path(
+  base_path,
+  "qc_outputs"
+)
+
+
+if(!dir.exists(qc_dir)){
+  dir.create(qc_dir, recursive=TRUE)
+}
+
+
+
+# ==============================================================================
+# Circular time correction
+# ==============================================================================
+
+correct_sleep_onset <- function(data){
+  
+  data %>%
+    
+    mutate(
+      
+      sleep_onset_wd_clock =
+        ifelse(
+          sleep_onset_wd_hour < 12,
+          sleep_onset_wd_hour + 24,
+          sleep_onset_wd_hour
+        ),
+      
+      
+      sleep_onset_we_clock =
+        ifelse(
+          sleep_onset_we_hour < 12,
+          sleep_onset_we_hour + 24,
+          sleep_onset_we_hour
+        )
+      
+    )
+  
+}
+
+
+
+# ==============================================================================
+# Load MI analytic cohort
+# ==============================================================================
+
+
+cat(
+  "Loading MI analytic cohort...\n"
+)
+
+
+df_MI <- readRDS(
+  MI_file
+)
+
+
+cat(
+  "Participants:",
+  nrow(df_MI),
+  "\n"
+)
+
+
+
+# ==============================================================================
+# Sleep rhythm variables
+# ==============================================================================
+
+
+df_MI <- correct_sleep_onset(
+  df_MI
+)
+
+
+sleep_vars <- c(
+  
+  "midpoint_wd_hour",
+  "midpoint_we_hour",
+  "sleep_onset_wd_clock",
+  "sleep_onset_we_clock",
+  "wake_time_wd_hour",
+  "wake_time_we_hour"
+  
+)
+
+
+
+missing_vars <- setdiff(
+  sleep_vars,
+  names(df_MI)
+)
+
+
+if(length(missing_vars)>0){
+  
+  stop(
+    "Missing sleep variables:",
+    paste(missing_vars,collapse=", ")
+  )
+  
+}
+
+
+
+# ==============================================================================
+# Step 1
+# Derive reference distribution from MI cohort
+# ==============================================================================
+
+
+sleep_reference <- map_dfr(
+  
+  sleep_vars,
+  
+  function(v){
+    
+    tibble(
+      
+      variable=v,
+      
+      median_value=
+        median(
+          df_MI[[v]],
+          na.rm=TRUE
+        ),
+      
+      sd_value=
+        sd(
+          df_MI[[v]],
+          na.rm=TRUE
+        ),
+      
+      P10=
+        quantile(
+          df_MI[[v]],
+          0.10,
+          na.rm=TRUE
+        ),
+      
+      P90=
+        quantile(
+          df_MI[[v]],
+          0.90,
+          na.rm=TRUE
+        )
+      
+    )
+    
+  }
+  
+)
+
+
+
+print(sleep_reference)
+
+
+
+write_csv(
+  
+  sleep_reference,
+  
+  file.path(
+    qc_dir,
+    "Step13B_MI_sleep_rhythm_reference_values.csv"
+  )
+  
+)
+
+
+
+# ==============================================================================
+# Step 2
+# Construct sleep rhythm index
+# ==============================================================================
+
+
+for(v in sleep_vars){
+  
+  
+  median_v <-
+    sleep_reference$median_value[
+      sleep_reference$variable==v
+    ]
+  
+  
+  sd_v <-
+    sleep_reference$sd_value[
+      sleep_reference$variable==v
+    ]
+  
+  
+  P10_v <-
+    sleep_reference$P10[
+      sleep_reference$variable==v
+    ]
+  
+  
+  P90_v <-
+    sleep_reference$P90[
+      sleep_reference$variable==v
+    ]
+  
+  
+  
+  # continuous deviation component
+  
+  df_MI[[paste0(v,"_dev")]] <-
+    
+    abs(
+      df_MI[[v]]-median_v
+    ) / sd_v
+  
+  
+  
+  # binary sensitivity component
+  
+  df_MI[[paste0(v,"_binary")]] <-
+    
+    ifelse(
+      
+      df_MI[[v]] < P10_v |
+        df_MI[[v]] > P90_v,
+      
+      1,
+      
+      0
+      
+    )
+  
+  
+}
+
+
+
+# ==============================================================================
+# Step 3
+# Composite scores
+# ==============================================================================
+
+
+dev_vars <- paste0(
+  sleep_vars,
+  "_dev"
+)
+
+
+binary_vars <- paste0(
+  sleep_vars,
+  "_binary"
+)
+
+
+
+df_MI <- df_MI %>%
+  
+  mutate(
+    
+    
+    sleep_component_missing =
+      rowSums(
+        is.na(
+          across(all_of(dev_vars))
+        )
+      ),
+    
+    
+    sleep_rhythm_disruption_index =
+      
+      ifelse(
+        
+        sleep_component_missing==0,
+        
+        rowSums(
+          across(all_of(dev_vars))
+        ),
+        
+        NA_real_
+        
+      ),
+    
+    
+    
+    sleep_binary_missing =
+      
+      rowSums(
+        is.na(
+          across(all_of(binary_vars))
+        )
+      ),
+    
+    
+    
+    sleep_rhythm_binary_score =
+      
+      ifelse(
+        
+        sleep_binary_missing==0,
+        
+        rowSums(
+          across(all_of(binary_vars))
+        ),
+        
+        NA_real_
+        
+      )
+    
+    
+  )
+
+
+
+# ==============================================================================
+# QC 1
+# Index distribution
+# ==============================================================================
+
+
+index_QC <- df_MI %>%
+  
+  summarise(
+    
+    N=n(),
+    
+    missing_primary_index=
+      sum(
+        is.na(
+          sleep_rhythm_disruption_index
+        )
+      ),
+    
+    mean_index=
+      mean(
+        sleep_rhythm_disruption_index,
+        na.rm=TRUE
+      ),
+    
+    SD_index=
+      sd(
+        sleep_rhythm_disruption_index,
+        na.rm=TRUE
+      ),
+    
+    median_index=
+      median(
+        sleep_rhythm_disruption_index,
+        na.rm=TRUE
+      ),
+    
+    P25=
+      quantile(
+        sleep_rhythm_disruption_index,
+        0.25,
+        na.rm=TRUE
+      ),
+    
+    P75=
+      quantile(
+        sleep_rhythm_disruption_index,
+        0.75,
+        na.rm=TRUE
+      ),
+    
+    P90=
+      quantile(
+        sleep_rhythm_disruption_index,
+        0.90,
+        na.rm=TRUE
+      ),
+    
+    P95=
+      quantile(
+        sleep_rhythm_disruption_index,
+        0.95,
+        na.rm=TRUE
+      )
+    
+  )
+
+
+
+print(index_QC)
+
+
+
+write_csv(
+  
+  index_QC,
+  
+  file.path(
+    qc_dir,
+    "Step13B_continuous_index_QC.csv"
+  )
+  
+)
+
+# ==============================================================================
+# QC 1b
+# Continuous index quintile
+# ==============================================================================
+
+df_MI <- df_MI %>%
+  
+  mutate(
+    
+    sleep_rhythm_index_quintile =
+      ntile(
+        sleep_rhythm_disruption_index,
+        5
+      )
+    
+  )
+
+
+quintile_QC <- df_MI %>%
+  
+  count(
+    sleep_rhythm_index_quintile
+  ) %>%
+  
+  mutate(
+    
+    percent =
+      round(
+        n/sum(n)*100,
+        2
+      )
+    
+  )
+
+
+print(quintile_QC)
+
+
+write_csv(
+  
+  quintile_QC,
+  
+  file.path(
+    qc_dir,
+    "Step13B_sleep_rhythm_index_quintile_distribution.csv"
+  )
+  
+)
+
+# ==============================================================================
+# QC 2
+# Binary score distribution
+# ==============================================================================
+
+
+binary_QC <- df_MI %>%
+  
+  count(
+    sleep_rhythm_binary_score
+  ) %>%
+  
+  mutate(
+    
+    percent=
+      round(
+        n/sum(n)*100,
+        2
+      )
+    
+  )
+
+
+
+print(binary_QC)
+
+
+
+write_csv(
+  
+  binary_QC,
+  
+  file.path(
+    qc_dir,
+    "Step13B_binary_score_QC.csv"
+  )
+  
+)
+
+
+
+# ==============================================================================
+# QC 3
+# Component deviation distribution
+# ==============================================================================
+
+
+component_QC <- df_MI %>%
+  
+  summarise(
+    
+    across(
+      
+      all_of(dev_vars),
+      
+      list(
+        mean=~mean(.,na.rm=TRUE),
+        SD=~sd(.,na.rm=TRUE)
+      )
+      
+    )
+    
+  )
+
+
+
+write_csv(
+  
+  component_QC,
+  
+  file.path(
+    qc_dir,
+    "Step13B_component_deviation_QC.csv"
+  )
+  
+)
+
+# ==============================================================================
+# QC 4
+# Component contribution
+# ==============================================================================
+
+
+component_contribution_QC <- df_MI %>%
+  
+  summarise(
+    
+    across(
+      
+      all_of(dev_vars),
+      
+      list(
+        
+        mean =
+          ~round(
+            mean(.,
+                 na.rm=TRUE),
+            3
+          ),
+        
+        median =
+          ~round(
+            median(.,
+                   na.rm=TRUE),
+            3
+          ),
+        
+        P75 =
+          ~round(
+            quantile(.,
+                     0.75,
+                     na.rm=TRUE),
+            3
+          )
+        
+      )
+      
+    )
+    
+  )
+
+
+
+print(component_contribution_QC)
+
+
+
+write_csv(
+  
+  component_contribution_QC,
+  
+  file.path(
+    qc_dir,
+    "Step13B_component_contribution_QC.csv"
+  )
+  
+)
+
+# ==============================================================================
+# Export
+# ==============================================================================
+
+
+saveRDS(
+  
+  df_MI,
+  
+  output_file
+  
+)
+
+
+
+cat(
+  
+  "\nCompleted.\nOutput:",
+  output_file,
+  "\n"
+  
+)
+
+library(ggplot2)
+
+
+ggplot(
+  df_MI,
+  aes(
+    x=sleep_rhythm_disruption_index
+  )
+)+
+  
+  geom_histogram(
+    bins=40
+  )+
+  
+  theme_classic()
+
+
+ggsave(
+  file.path(
+    qc_dir,
+    "Step13B_sleep_rhythm_index_distribution.png"
+  ),
+  width=7,
+  height=5,
+  dpi=300
+)
+
+################################################################################
+# SCRIPT: 14. Multiple Imputation for Missing Covariates - Final Version
+# STUDY: NHANES 2017-2023 Sleep Timing / Depression
+#
+# Purpose:
+#   Create multiply imputed datasets for primary association analyses.
+#
+# Key principles:
+#   - Do NOT impute outcomes
+#   - Do NOT impute core sleep exposures
+#   - Do NOT impute survey design variables or weights
+#   - Only impute missing covariates
+#   - Fully observed covariates are retained as predictors but not imputed
+#
+# Input:
+#   D:/code/12.Dataset_MI_Eligible.rds
+#
+# Outputs:
+#   D:/code/14.MI_mids_object.rds
+#   D:/code/14.MI_long_completed_data.rds
+#   D:/code/14.MI_completed_data_list.rds
+#   D:/code/14.MI_survey_design_list.rds
+#
+# QC outputs:
+#   D:/code/qc_outputs/Step14_MI_missingness_before.csv
+#   D:/code/qc_outputs/Step14_MI_missingness_after.csv
+#   D:/code/qc_outputs/Step14_MI_method_table.csv
+#   D:/code/qc_outputs/Step14_MI_logged_events.csv
+#   D:/code/qc_outputs/Step14_MI_traceplot.pdf
+#   D:/code/qc_outputs/Step14_MI_densityplot.pdf
+#   D:/code/qc_outputs/Step14_MI_stripplot.pdf
+################################################################################
+
+# 1. Libraries -----------------------------------------------------------------
+
+library(tidyverse)
+library(mice)
+library(survey)
+
+options(survey.lonely.psu = "adjust")
+
+# 2. Environment ---------------------------------------------------------------
+
+base_path <- "D:/code"
+setwd(base_path)
+
+qc_dir <- file.path(base_path, "qc_outputs")
+
+if (!dir.exists(qc_dir)) {
+  dir.create(qc_dir, recursive = TRUE)
+}
+
+# 3. Load MI-eligible dataset --------------------------------------------------
+
+df0 <- readRDS("12.Dataset_MI_Eligible.rds")
+
+cat("Loaded MI-eligible dataset:\n")
+cat("N =", nrow(df0), "\n")
+cat("Variables =", ncol(df0), "\n\n")
+
+# 4. Define variable sets ------------------------------------------------------
+
+id_vars <- c(
+  "SEQN"
+)
+
+design_vars <- c(
+  "SDMVPSU",
+  "SDMVSTRA",
+  "mec_adj",
+  "int_adj"
+)
+
+outcome_vars <- c(
+  "PHQ9_SCORE",
+  "PHQ9_depression_above_10",
+  "Moderate_depression_above",
+  "PHQ9_depression_above_15",
+  "ModSevere_depression_above",
+  "PHQ9_no_sleep_SCORE",
+  "PHQ9_no_sleep_depression_above_10",
+  "PHQ9_no_sleep_depression_above_9",
+  "suicidal_ideation_daily"
+)
+
+sleep_vars <- c(
+  "sleep_onset_wd_min",
+  "wake_time_wd_min",
+  "midpoint_wd_min",
+  
+  "sleep_onset_we_min",
+  "wake_time_we_min",
+  "midpoint_we_min",
+  
+  "sleep_onset_wd_hour",
+  "wake_time_wd_hour",
+  "midpoint_wd_hour",
+  
+  "sleep_onset_we_hour",
+  "wake_time_we_hour",
+  "midpoint_we_hour",
+  
+  "dur_wd",
+  "dur_we",
+  "dur_wd_cat",
+  "dur_we_cat",
+  "dur_wd_cat_num",
+  "dur_we_cat_num"
+)
+
+# Continuous covariates requiring imputation
+impute_continuous <- c(
+  "INDFMPIR",
+  "BMI_value",
+  "MET_total",
+  "sedentary_min"
+)
+
+# Binary covariates requiring imputation
+# Fully observed variables such as sex are NOT listed here.
+impute_binary <- c(
+  "diabetes_or_prediabetes",
+  "htn_status",
+  "work_status"
+)
+
+# Multicategory covariates requiring imputation
+# Fully observed race/ethnicity is retained as predictor but not imputed.
+impute_multiclass <- c(
+  "education",
+  "marital_status",
+  "smoke_status",
+  "Alcohol_Status"
+)
+
+# Fully observed covariates retained as predictors but not imputed
+complete_covariates <- c(
+  "RIDAGEYR",
+  "sex",
+  "race_ethnicity"
+)
+
+mi_vars <- unique(c(
+  id_vars,
+  design_vars,
+  outcome_vars,
+  sleep_vars,
+  complete_covariates,
+  impute_continuous,
+  impute_binary,
+  impute_multiclass
+))
+
+missing_vars <- setdiff(mi_vars, names(df0))
+
+if (length(missing_vars) > 0) {
+  stop(
+    "These required variables are missing from df0: ",
+    paste(missing_vars, collapse = ", ")
+  )
+}
+
+df_mi <- df0 %>%
+  select(all_of(mi_vars))
+
+# 5. Prepare variable types for mice ------------------------------------------
+
+df_mi <- df_mi %>%
+  mutate(
+    SEQN = as.numeric(SEQN),
+    
+    SDMVPSU = factor(SDMVPSU),
+    SDMVSTRA = factor(SDMVSTRA),
+    
+    PHQ9_depression_above_10 = factor(
+      PHQ9_depression_above_10,
+      levels = c(0, 1)
+    ),
+    
+    Moderate_depression_above = factor(
+      Moderate_depression_above,
+      levels = c(0, 1)
+    ),
+    
+    PHQ9_depression_above_15 = factor(
+      PHQ9_depression_above_15,
+      levels = c(0, 1)
+    ),
+    
+    ModSevere_depression_above = factor(
+      ModSevere_depression_above,
+      levels = c(0, 1)
+    ),
+    
+    PHQ9_no_sleep_depression_above_10 = factor(
+      PHQ9_no_sleep_depression_above_10,
+      levels = c(0, 1)
+    ),
+    
+    PHQ9_no_sleep_depression_above_9 = factor(
+      PHQ9_no_sleep_depression_above_9,
+      levels = c(0, 1)
+    ),
+    
+    suicidal_ideation_daily = factor(
+      suicidal_ideation_daily,
+      levels = c(0, 1)
+    ),
+    
+    dur_wd_cat = factor(
+      dur_wd_cat,
+      levels = c("7-9 hours", "<7 hours", "≥9 hours")
+    ),
+    
+    dur_we_cat = factor(
+      dur_we_cat,
+      levels = c("7-9 hours", "<7 hours", "≥9 hours")
+    ),
+    
+    sex = factor(sex),
+    
+    race_ethnicity = factor(race_ethnicity),
+    
+    education = factor(education),
+    
+    marital_status = factor(marital_status),
+    
+    smoke_status = factor(
+      smoke_status,
+      levels = c(0, 1, 2),
+      labels = c("Never", "Former", "Current")
+    ),
+    
+    Alcohol_Status = factor(
+      Alcohol_Status,
+      levels = c(0, 1, 2),
+      labels = c("Never", "Non-heavy ever drinker", "Heavy")
+    ),
+    
+    diabetes_or_prediabetes = factor(
+      diabetes_or_prediabetes,
+      levels = c(0, 1),
+      labels = c("No", "Diabetes/prediabetes")
+    ),
+    
+    htn_status = factor(
+      htn_status,
+      levels = c(0, 1),
+      labels = c("No", "Yes")
+    ),
+    
+    work_status = factor(
+      work_status,
+      levels = c(0, 1),
+      labels = c("Employed/with job", "Not currently working")
+    )
+  )
+
+# 6. Missingness before imputation --------------------------------------------
+
+missing_before <- tibble(
+  Variable = names(df_mi),
+  Missing_n = map_int(
+    names(df_mi),
+    ~ sum(is.na(df_mi[[.x]]))
+  ),
+  Total_N = nrow(df_mi),
+  Missing_percent = round(
+    100 * Missing_n / Total_N,
+    2
+  )
+) %>%
+  arrange(desc(Missing_percent), Variable)
+
+cat("\n--- Missingness before imputation ---\n")
+print(
+  missing_before %>%
+    filter(Missing_n > 0)
+)
+
+write.csv(
+  missing_before,
+  file.path(qc_dir, "Step14_MI_missingness_before.csv"),
+  row.names = FALSE,
+  fileEncoding = "UTF-8"
+)
+
+# 7. Configure mice ------------------------------------------------------------
+
+ini <- mice(
+  df_mi,
+  maxit = 0,
+  printFlag = FALSE
+)
+
+meth <- ini$method
+pred <- ini$predictorMatrix
+
+# Variables that should not be imputed
+no_impute_vars <- unique(c(
+  id_vars,
+  design_vars,
+  outcome_vars,
+  sleep_vars
+))
+
+# Clear all methods first
+meth[] <- ""
+
+# Assign imputation methods only to variables with missingness
+meth[impute_continuous] <- "pmm"
+meth[impute_binary] <- "logreg"
+meth[impute_multiclass] <- "polyreg"
+
+# Ensure variables without missingness are not assigned methods
+observed_missing_n <- map_int(
+  names(df_mi),
+  ~ sum(is.na(df_mi[[.x]]))
+)
+
+names(observed_missing_n) <- names(df_mi)
+
+meth[observed_missing_n == 0] <- ""
+
+# Explicitly enforce no-imputation variables
+meth[no_impute_vars] <- ""
+
+# Predictor matrix setup
+# Keep fully observed predictors available,
+# but do not use ID as predictor.
+pred[, "SEQN"] <- 0
+pred["SEQN", ] <- 0
+
+# Rows for non-imputed variables do not matter, but setting to 0 is cleaner.
+pred[id_vars,] <-0
+pred[,id_vars] <-0
+
+pred[design_vars,] <-0
+pred[,design_vars] <-0
+
+pred[outcome_vars,] <-0
+pred[,outcome_vars] <-0
+
+pred[sleep_vars,] <-0
+pred[,sleep_vars] <-0
+
+# Avoid self-prediction
+diag(pred) <- 0
+
+# 8. Method table QC -----------------------------------------------------------
+
+method_table <- tibble(
+  Variable = names(meth),
+  Method = meth,
+  Missing_n = missing_before$Missing_n[
+    match(names(meth), missing_before$Variable)
+  ],
+  Missing_percent = missing_before$Missing_percent[
+    match(names(meth), missing_before$Variable)
+  ]
+)
+
+cat("\n--- Imputation method table ---\n")
+print(
+  method_table %>%
+    filter(Method != "" | Missing_n > 0)
+)
+
+write.csv(
+  method_table,
+  file.path(qc_dir, "Step14_MI_method_table.csv"),
+  row.names = FALSE,
+  fileEncoding = "UTF-8"
+)
+
+# 9. Run multiple imputation ---------------------------------------------------
+
+set.seed(20260525)
+
+imp <- mice(
+  data = df_mi,
+  m = 20,
+  maxit = 20,
+  method = meth,
+  predictorMatrix = pred,
+  seed = 20260525,
+  printFlag = TRUE
+)
+
+saveRDS(
+  imp,
+  file.path(base_path, "14.MI_mids_object.rds")
+)
+
+cat("\nSaved mids object: D:/code/14.MI_mids_object.rds\n")
+
+# 10. Completed long-format data ----------------------------------------------
+
+mi_long <- complete(
+  imp,
+  action = "long",
+  include = FALSE
+)
+
+# 11. Derive post-imputation analysis variables --------------------------------
+
+derive_post_mi_vars <- function(data) {
+  
+  data %>%
+    mutate(
+      smoke_status_num = case_when(
+        smoke_status == "Never" ~ 0,
+        smoke_status == "Former" ~ 1,
+        smoke_status == "Current" ~ 2,
+        TRUE ~ NA_real_
+      ),
+      
+      Alcohol_Status_Num = case_when(
+        Alcohol_Status == "Never" ~ 0,
+        Alcohol_Status == "Non-heavy ever drinker" ~ 1,
+        Alcohol_Status == "Heavy" ~ 2,
+        TRUE ~ NA_real_
+      ),
+      
+      diabetes_or_prediabetes_num = case_when(
+        diabetes_or_prediabetes == "No" ~ 0,
+        diabetes_or_prediabetes == "Diabetes/prediabetes" ~ 1,
+        TRUE ~ NA_real_
+      ),
+      
+      htn_status_num = case_when(
+        htn_status == "No" ~ 0,
+        htn_status == "Yes" ~ 1,
+        TRUE ~ NA_real_
+      ),
+      
+      work_status_num = case_when(
+        work_status == "Employed/with job" ~ 0,
+        work_status == "Not currently working" ~ 1,
+        TRUE ~ NA_real_
+      ),
+      
+      Age_cat = case_when(
+        RIDAGEYR < 40 ~ "18-39 years",
+        RIDAGEYR >= 40 & RIDAGEYR < 60 ~ "40-59 years",
+        RIDAGEYR >= 60 ~ "≥60 years",
+        TRUE ~ NA_character_
+      ),
+      
+      Age_cat = factor(
+        Age_cat,
+        levels = c("18-39 years", "40-59 years", "≥60 years")
+      ),
+      
+      Age_cat_num = as.numeric(Age_cat),
+      
+      PIR_cat = case_when(
+        INDFMPIR < 1.30 ~ "<1.30",
+        INDFMPIR >= 1.30 & INDFMPIR < 3.50 ~ "1.30-3.49",
+        INDFMPIR >= 3.50 ~ "≥3.50",
+        TRUE ~ NA_character_
+      ),
+      
+      PIR_cat = factor(
+        PIR_cat,
+        levels = c("<1.30", "1.30-3.49", "≥3.50")
+      ),
+      
+      PIR_cat_num = as.numeric(PIR_cat),
+      
+      BMI_cat = case_when(
+        BMI_value < 18.5 ~ "Underweight",
+        BMI_value >= 18.5 & BMI_value < 25 ~ "Normal",
+        BMI_value >= 25 & BMI_value < 30 ~ "Overweight",
+        BMI_value >= 30 ~ "Obese",
+        TRUE ~ NA_character_
+      ),
+      
+      BMI_cat = factor(
+        BMI_cat,
+        levels = c(
+          "Underweight",
+          "Normal",
+          "Overweight",
+          "Obese"
+        )
+      ),
+      
+      BMI_cat_ordinal = as.numeric(BMI_cat),
+      
+      MET_cat_label = case_when(
+        MET_total < 600 ~ "Low",
+        MET_total >= 600 & MET_total <= 3000 ~ "Moderate",
+        MET_total > 3000 ~ "High",
+        TRUE ~ NA_character_
+      ),
+      
+      MET_cat_label = factor(
+        MET_cat_label,
+        levels = c("Low", "Moderate", "High")
+      ),
+      
+      MET_cat_num = as.numeric(MET_cat_label),
+      
+      sedentary_cat_label = case_when(
+        sedentary_min < 360 ~ "<6h",
+        sedentary_min >= 360 & sedentary_min <= 480 ~ "6-8h",
+        sedentary_min > 480 ~ ">8h",
+        TRUE ~ NA_character_
+      ),
+      
+      sedentary_cat_label = factor(
+        sedentary_cat_label,
+        levels = c("<6h", "6-8h", ">8h")
+      ),
+      
+      sedentary_cat_num = as.numeric(sedentary_cat_label)
+    )
+}
+
+mi_long_analysis <- mi_long %>%
+  derive_post_mi_vars()
+
+# 12. Completed data list ------------------------------------------------------
+
+mi_completed_list <- split(
+  mi_long_analysis %>%
+    select(-.id),
+  mi_long_analysis$.imp
+)
+
+mi_completed_list <- lapply(
+  mi_completed_list,
+  function(dat) {
+    dat %>%
+      mutate(
+        SDMVPSU = as.numeric(as.character(SDMVPSU)),
+        SDMVSTRA = as.numeric(as.character(SDMVSTRA))
+      )
+  }
+)
+
+saveRDS(
+  mi_long_analysis,
+  file.path(base_path, "14.MI_long_completed_data.rds")
+)
+
+saveRDS(
+  mi_completed_list,
+  file.path(base_path, "14.MI_completed_data_list.rds")
+)
+
+cat("\nSaved long completed data: D:/code/14.MI_long_completed_data.rds\n")
+cat("Saved completed data list: D:/code/14.MI_completed_data_list.rds\n")
+
+# 13. Missingness after imputation --------------------------------------------
+
+analysis_vars_after <- c(
+  outcome_vars,
+  sleep_vars,
+  design_vars,
+  complete_covariates,
+  impute_continuous,
+  impute_binary,
+  impute_multiclass,
+  "Age_cat",
+  "PIR_cat",
+  "BMI_cat",
+  "MET_cat_label",
+  "sedentary_cat_label"
+)
+
+missing_after <- mi_long_analysis %>%
+  group_by(.imp) %>%
+  summarise(
+    across(
+      all_of(analysis_vars_after),
+      ~ sum(is.na(.x))
+    ),
+    .groups = "drop"
+  ) %>%
+  pivot_longer(
+    cols = -.imp,
+    names_to = "Variable",
+    values_to = "Missing_n"
+  ) %>%
+  group_by(Variable) %>%
+  summarise(
+    Max_missing_across_imputations = max(Missing_n),
+    Min_missing_across_imputations = min(Missing_n),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(Max_missing_across_imputations), Variable)
+
+cat("\n--- Missingness after imputation ---\n")
+print(missing_after)
+
+write.csv(
+  missing_after,
+  file.path(qc_dir, "Step14_MI_missingness_after.csv"),
+  row.names = FALSE,
+  fileEncoding = "UTF-8"
+)
+
+# 14. Survey design list -------------------------------------------------------
+
+mi_design_list <- lapply(
+  mi_completed_list,
+  function(dat) {
+    svydesign(
+      id = ~SDMVPSU,
+      strata = ~SDMVSTRA,
+      weights = ~mec_adj,
+      nest = TRUE,
+      data = dat
+    )
+  }
+)
+
+saveRDS(
+  mi_design_list,
+  file.path(base_path, "14.MI_survey_design_list.rds")
+)
+
+cat("\nSaved survey design list: D:/code/14.MI_survey_design_list.rds\n")
+
+# 15. Diagnostics --------------------------------------------------------------
+
+cat("\nGenerating MICE diagnostics...\n")
+
+# Trace plot
+pdf(
+  file.path(qc_dir, "Step14_MI_traceplot.pdf"),
+  width = 10,
+  height = 8
+)
+
+plot(imp)
+
+dev.off()
+
+# Density plot for continuous imputed variables
+pdf(
+  file.path(qc_dir, "Step14_MI_densityplot.pdf"),
+  width = 10,
+  height = 8
+)
+
+densityplot(
+  imp,
+  ~ INDFMPIR + BMI_value + MET_total + sedentary_min
+)
+
+dev.off()
+
+# Strip plot
+pdf(
+  file.path(qc_dir, "Step14_MI_stripplot.pdf"),
+  width = 10,
+  height = 8
+)
+
+stripplot(
+  imp,
+  pch = 20,
+  cex = 0.7
+)
+
+dev.off()
+
+# Logged events
+if (!is.null(imp$loggedEvents)) {
+  
+  write.csv(
+    imp$loggedEvents,
+    file.path(qc_dir, "Step14_MI_logged_events.csv"),
+    row.names = FALSE,
+    fileEncoding = "UTF-8"
+  )
+  
+  cat("Logged events exported: Step14_MI_logged_events.csv\n")
+  
+} else {
+  
+  cat("No logged events detected.\n")
+}
+
+# 16. Final QC summary ---------------------------------------------------------
+
+cat("\n--- FINAL MI QC SUMMARY ---\n")
+cat("MI eligible N:", nrow(df_mi), "\n")
+cat("Number of imputations:", imp$m, "\n")
+cat("Number of iterations:", imp$iteration, "\n")
+cat(
+  "Variables formally imputed:",
+  sum(method_table$Method != ""),
+  "\n"
+)
+cat(
+  "Variables with remaining missingness after MI:",
+  sum(missing_after$Max_missing_across_imputations > 0),
+  "\n"
+)
+
+cat("\nFiles generated:\n")
+cat("1) 14.MI_mids_object.rds\n")
+cat("2) 14.MI_long_completed_data.rds\n")
+cat("3) 14.MI_completed_data_list.rds\n")
+cat("4) 14.MI_survey_design_list.rds\n")
+cat("5) Step14_MI_missingness_before.csv\n")
+cat("6) Step14_MI_missingness_after.csv\n")
+cat("7) Step14_MI_method_table.csv\n")
+cat("8) Step14_MI_logged_events.csv\n")
+cat("9) Step14_MI_traceplot.pdf\n")
+cat("10) Step14_MI_densityplot.pdf\n")
+cat("11) Step14_MI_stripplot.pdf\n")
+
+cat("\nMultiple imputation completed successfully.\n")
