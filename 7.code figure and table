@@ -1,0 +1,3596 @@
+################################################################################
+# Figure 1
+# Six sleep timing characteristics on the 24-hour sleep rhythm cycle
+# FINAL VERSION
+#
+# Clock definition:
+#   00:00 = top
+#   clockwise increasing
+#   06:00 = right
+#   12:00 = bottom
+#   18:00 = left
+#
+# IMPORTANT:
+#   Marker positions are exact.
+#   No angular/radial offset is applied.
+#   Weekday/weekend sleep onset overlap exactly at 23:00.
+#
+# Output:
+#   TIFF 600 dpi, LZW compression
+#   PDF vector file
+################################################################################
+
+rm(list=ls())
+
+library(ggplot2)
+library(dplyr)
+library(grid)
+
+# ==============================================================================
+# 1. PATH
+# ==============================================================================
+
+out_dir<-"D:/code/Figure1_clock_final_v3"
+dir.create(out_dir,recursive=TRUE,showWarnings=FALSE)
+
+# ==============================================================================
+# 2. COLORS
+# Color-blind-friendly Okabe-Ito palette
+# ==============================================================================
+
+col_onset<-"#0072B2"   # blue
+col_mid<-"#009E73"     # bluish green
+col_wake<-"#E69F00"    # orange
+col_navy<-"#17365D"
+col_text<-"#1F1F1F"
+
+# ==============================================================================
+# 3. SLEEP REFERENCE VALUES
+# ==============================================================================
+
+sleep_data<-tibble(
+  variable=c(
+    "Weekday sleep onset","Weekend sleep onset",
+    "Weekday midpoint of sleep","Weekend midpoint of sleep",
+    "Weekday wake time","Weekend wake time"
+  ),
+  hour=c(23.0,23.0,2.5,3.5,6.5,7.5),
+  domain=c(
+    "Sleep onset","Sleep onset",
+    "Sleep midpoint","Sleep midpoint",
+    "Wake time","Wake time"
+  ),
+  day_type=c("Weekday","Weekend","Weekday","Weekend","Weekday","Weekend")
+)
+
+# ==============================================================================
+# 4. CLOCK FUNCTIONS
+# ==============================================================================
+
+clock_xy<-function(hour,radius=1){
+  theta<-2*pi*(hour%%24)/24
+  tibble(x=radius*sin(theta),y=radius*cos(theta))
+}
+
+format_clock<-function(h){
+  hh<-floor(h)%%24
+  mm<-round((h-floor(h))*60)
+  if(mm==60){
+    hh<-(hh+1)%%24
+    mm<-0
+  }
+  sprintf("%02d:%02d",hh,mm)
+}
+
+# ==============================================================================
+# 5. EXACT MARKER POSITIONS
+# ==============================================================================
+
+marker_xy<-clock_xy(sleep_data$hour,radius=1)
+
+sleep_data<-bind_cols(sleep_data,marker_xy)%>%
+  mutate(time_label=vapply(hour,format_clock,character(1)))
+
+cat("\nExact sleep timing positions:\n")
+
+print(
+  sleep_data%>%
+    select(variable,hour,time_label,x,y)
+)
+
+# ==============================================================================
+# 6. CLOCK TICKS
+# ==============================================================================
+
+# Minor ticks: every 30 minutes
+minor_hours<-seq(0,23.5,by=0.5)
+minor_inner<-clock_xy(minor_hours,radius=0.955)
+minor_outer<-clock_xy(minor_hours,radius=1)
+
+minor_ticks<-tibble(
+  x=minor_inner$x,
+  y=minor_inner$y,
+  xend=minor_outer$x,
+  yend=minor_outer$y
+)
+
+# Major ticks: every hour
+major_hours<-seq(0,23,by=1)
+major_inner<-clock_xy(major_hours,radius=0.92)
+major_outer<-clock_xy(major_hours,radius=1)
+
+major_ticks<-tibble(
+  x=major_inner$x,
+  y=major_inner$y,
+  xend=major_outer$x,
+  yend=major_outer$y
+)
+
+# Clock labels: every 3 hours
+label_hours<-seq(0,21,by=3)
+clock_label_xy<-clock_xy(label_hours,radius=1.15)
+
+clock_labels<-tibble(
+  label=sprintf("%02d:00",label_hours),
+  x=clock_label_xy$x,
+  y=clock_label_xy$y
+)
+
+# ==============================================================================
+# 7. DAY / NIGHT BACKGROUND
+# ==============================================================================
+
+circle_path<-function(start_hour,end_hour,radius=1,n=400){
+  if(end_hour<=start_hour) end_hour<-end_hour+24
+  hrs<-seq(start_hour,end_hour,length.out=n)
+  clock_xy(hrs,radius)
+}
+
+# Day: 06:00–18:00
+day_poly<-bind_rows(
+  tibble(x=0,y=0),
+  circle_path(6,18),
+  tibble(x=0,y=0)
+)
+
+# Night: 18:00–06:00
+night_poly<-bind_rows(
+  tibble(x=0,y=0),
+  circle_path(18,30),
+  tibble(x=0,y=0)
+)
+
+# ==============================================================================
+# 8. LABEL POSITIONS
+# ==============================================================================
+
+label_pos<-tibble(
+  variable=c(
+    "Weekday midpoint of sleep",
+    "Weekend midpoint of sleep",
+    "Weekday wake time",
+    "Weekend wake time",
+    "Weekday sleep onset",
+    "Weekend sleep onset"
+  ),
+  label_x=c(1.55,1.55,1.55,1.55,-1.55,-1.55),
+  label_y=c(
+    1.10,   # Weekday midpoint 02:30
+    0.67,   # Weekend midpoint 03:30
+    0.00,   # Weekday wake 06:30
+    -0.60,   # Weekend wake 07:30
+    0.90,   # Weekday onset 23:00
+    0.45    # Weekend onset 23:00
+  ),
+  hjust=c(0,0,0,0,1,1)
+)
+
+# ==============================================================================
+# 9. MERGE LABEL INFORMATION
+# ==============================================================================
+
+plot_data<-sleep_data%>%
+  left_join(label_pos,by="variable")%>%
+  mutate(
+    callout=paste0(variable,"\n",time_label),
+    line_end_x=ifelse(label_x>0,label_x-0.06,label_x+0.06),
+    line_end_y=label_y
+  )
+
+# ==============================================================================
+# 10. CLOCK CIRCLES
+# ==============================================================================
+
+theta<-seq(0,2*pi,length.out=720)
+
+outer_circle<-tibble(
+  x=sin(theta),
+  y=cos(theta)
+)
+
+inner_circle<-tibble(
+  x=0.32*sin(theta),
+  y=0.32*cos(theta)
+)
+
+# ==============================================================================
+# 11. INITIALIZE FIGURE
+# ==============================================================================
+
+p<-ggplot()
+# ==============================================================================
+# 12. BACKGROUND
+# ==============================================================================
+
+p<-p+
+  geom_polygon(data=day_poly,aes(x=x,y=y),fill="#F3F7FC",color=NA)+
+  geom_polygon(data=night_poly,aes(x=x,y=y),fill="#DCE6F4",color=NA)
+
+# ==============================================================================
+# 13. OUTER / INNER CIRCLES
+# ==============================================================================
+
+p<-p+
+  geom_path(data=outer_circle,aes(x=x,y=y),linewidth=1.1,color=col_navy)+
+  geom_path(data=inner_circle,aes(x=x,y=y),linewidth=0.8,color=col_navy)
+
+# ==============================================================================
+# 14. CLOCK TICKS
+# ==============================================================================
+
+p<-p+
+  geom_segment(
+    data=minor_ticks,
+    aes(x=x,y=y,xend=xend,yend=yend),
+    linewidth=0.25,
+    color="#B8B8B8"
+  )+
+  geom_segment(
+    data=major_ticks,
+    aes(x=x,y=y,xend=xend,yend=yend),
+    linewidth=0.60,
+    color="#7D7D7D"
+  )
+
+# ==============================================================================
+# 15. CLOCK LABELS
+# ==============================================================================
+
+p<-p+
+  geom_text(
+    data=clock_labels,
+    aes(x=x,y=y,label=label),
+    size=3.8,
+    fontface="bold",
+    color=col_text
+  )
+
+# ==============================================================================
+# 16. CENTER
+# ==============================================================================
+
+p<-p+
+  annotate(
+    "text",
+    x=0,
+    y=0,
+    label="24-hour\ncycle",
+    size=5,
+    fontface="bold",
+    color=col_navy
+  )
+
+# ==============================================================================
+# 17. SUN AND MOON
+# ==============================================================================
+
+sun_angles<-seq(0,2*pi,length.out=13)[-13]
+
+sun_rays<-tibble(
+  x=0.12*cos(sun_angles),
+  y=-0.67+0.12*sin(sun_angles),
+  xend=0.17*cos(sun_angles),
+  yend=-0.67+0.17*sin(sun_angles)
+)
+
+p<-p+
+  geom_segment(
+    data=sun_rays,
+    aes(x=x,y=y,xend=xend,yend=yend),
+    color="#E69F00",
+    linewidth=0.7
+  )+
+  annotate(
+    "point",
+    x=0,
+    y=-0.67,
+    shape=21,
+    size=9,
+    fill="#F5C242",
+    color="#E69F00",
+    stroke=1
+  )+
+  annotate(
+    "point",
+    x=0,
+    y=0.67,
+    shape=21,
+    size=8,
+    fill=col_navy,
+    color=col_navy
+  )+
+  annotate(
+    "point",
+    x=0.035,
+    y=0.695,
+    shape=21,
+    size=7.1,
+    fill="#DCE6F4",
+    color="#DCE6F4"
+  )
+
+# ==============================================================================
+# 18. LEADER LINES
+# ==============================================================================
+
+p<-p+
+  geom_segment(
+    data=plot_data,
+    aes(
+      x=x,
+      y=y,
+      xend=line_end_x,
+      yend=line_end_y,
+      color=domain
+    ),
+    linetype="dashed",
+    linewidth=0.55,
+    alpha=0.95
+  )
+
+# ==============================================================================
+# 19. EXACT MARKERS
+# ==============================================================================
+
+weekend_data<-plot_data%>%filter(day_type=="Weekend")
+weekday_data<-plot_data%>%filter(day_type=="Weekday")
+
+p<-p+
+  geom_point(
+    data=weekend_data,
+    aes(x=x,y=y,color=domain),
+    shape=24,
+    fill="white",
+    size=5.5,
+    stroke=1.2
+  )+
+  geom_point(
+    data=weekday_data,
+    aes(x=x,y=y,fill=domain),
+    shape=21,
+    size=3.8,
+    stroke=0.7,
+    color="white"
+  )
+
+# ==============================================================================
+# 20. CALLOUT LABELS
+# ==============================================================================
+
+p<-p+
+  geom_label(
+    data=plot_data,
+    aes(
+      x=label_x,
+      y=label_y,
+      label=callout,
+      color=domain,
+      hjust=hjust
+    ),
+    fill="white",
+    linewidth=0.35,
+    label.r=unit(0.10,"lines"),
+    label.padding=unit(0.25,"lines"),
+    size=3.4,
+    lineheight=1.10,
+    show.legend=FALSE
+  )
+
+# ==============================================================================
+# 21. COLOR MAPPING
+# ==============================================================================
+
+p<-p+
+  scale_color_manual(
+    values=c(
+      "Sleep onset"=col_onset,
+      "Sleep midpoint"=col_mid,
+      "Wake time"=col_wake
+    )
+  )+
+  scale_fill_manual(
+    values=c(
+      "Sleep onset"=col_onset,
+      "Sleep midpoint"=col_mid,
+      "Wake time"=col_wake
+    )
+  )
+
+# ==============================================================================
+# 22. DOMAIN LEGEND
+# ==============================================================================
+
+domain_legend<-tibble(
+  x=c(-1.45,-1.45,-1.45),
+  y=c(-1.25,-1.38,-1.51),
+  domain=c("Sleep onset","Sleep midpoint","Wake time")
+)
+
+p<-p+
+  annotate(
+    "text",
+    x=-1.45,
+    y=-1.10,
+    label="Domains",
+    hjust=0,
+    fontface="bold",
+    size=3.5,
+    color=col_text
+  )+
+  geom_point(
+    data=domain_legend,
+    aes(x=x,y=y,color=domain),
+    size=3.5
+  )+
+  geom_text(
+    data=domain_legend,
+    aes(x=x+0.10,y=y,label=domain),
+    hjust=0,
+    size=3.2,
+    color=col_text
+  )
+
+# ==============================================================================
+# 23. SYMBOL LEGEND
+# ==============================================================================
+
+p<-p+
+  annotate(
+    "text",
+    x=0.55,
+    y=-1.10,
+    label="Symbols",
+    hjust=0,
+    fontface="bold",
+    size=3.5,
+    color=col_text
+  )+
+  annotate(
+    "point",
+    x=0.60,
+    y=-1.27,
+    shape=21,
+    size=3.8,
+    fill="black",
+    color="white"
+  )+
+  annotate(
+    "text",
+    x=0.72,
+    y=-1.27,
+    label="Weekday",
+    hjust=0,
+    size=3.2,
+    color=col_text
+  )+
+  annotate(
+    "point",
+    x=0.60,
+    y=-1.43,
+    shape=24,
+    size=4.2,
+    fill="white",
+    color="black",
+    stroke=1
+  )+
+  annotate(
+    "text",
+    x=0.72,
+    y=-1.43,
+    label="Weekend",
+    hjust=0,
+    size=3.2,
+    color=col_text
+  )
+
+# ==============================================================================
+# 24. FINAL LAYOUT
+# ==============================================================================
+
+p<-p+
+  coord_equal(
+    xlim=c(-2.05,2.05),
+    ylim=c(-1.62,1.35),
+    clip="off"
+  )+
+  theme_void(base_size=11)+
+  theme(
+    legend.position="none",
+    plot.margin=margin(15,20,15,20)
+  )
+
+# ==============================================================================
+# 25. DISPLAY
+# ==============================================================================
+
+print(p)
+
+# ==============================================================================
+# 26. EXPORT
+# ==============================================================================
+
+ggsave(
+  filename=file.path(out_dir,"Figure1_sleep_rhythm_clock_FINAL.tiff"),
+  plot=p,
+  width=10,
+  height=8.2,
+  units="in",
+  dpi=600,
+  compression="lzw",
+  bg="white"
+)
+
+ggsave(
+  filename=file.path(out_dir,"Figure1_sleep_rhythm_clock_FINAL.pdf"),
+  plot=p,
+  width=10,
+  height=8.2,
+  units="in",
+  device=grDevices::cairo_pdf,
+  bg="white"
+)
+
+ggsave(
+  filename=file.path(out_dir,"Figure1_sleep_rhythm_clock_FINAL.png"),
+  plot=p,
+  width=10,
+  height=8.2,
+  units="in",
+  dpi=300,
+  bg="white"
+)
+
+cat("\n============================================================\n")
+cat("FIGURE 1 EXPORTED SUCCESSFULLY\n")
+cat("00:00 top; clockwise increasing\n")
+cat("No marker-time offsets applied\n")
+cat("Weekday/weekend onset overlap exactly at 23:00\n")
+cat("Output:",out_dir,"\n")
+cat("============================================================\n")
+
+################################################################################
+# Figure 2
+# Combined RCS plots:
+#   a = Sleep onset
+#   b = Sleep midpoint
+#   c = Wake time
+#
+# Input figures:
+#   Step16 = Sleep onset
+#   Step15 = Sleep midpoint
+#   Step17 = Wake time
+#
+# Layout:
+#   horizontal, a-b-c
+#
+# Output:
+#   TIFF 600 dpi, LZW compression
+#   PDF
+#   PNG
+################################################################################
+
+rm(list=ls())
+
+library(magick)
+library(ggplot2)
+library(cowplot)
+library(grid)
+
+# ==============================================================================
+# 1. PATHS
+# ==============================================================================
+
+onset_file <- "D:/code/Step16_MI_Eligible_RCS_exposure_outcome_only/figures/Step16_MI_Eligible_RCS_bare.tiff"
+
+midpoint_file <- "D:/code/Step15_MI_Eligible_RCS_exposure_outcome_only/figures/Step15_MI_Eligible_RCS_bare.tiff"
+
+wake_file <- "D:/code/Step17_MI_Eligible_RCS_exposure_outcome_only/figures/Step17_MI_Eligible_RCS_bare.tiff"
+
+out_dir <- "D:/code/Figure2_RCS_combined"
+
+dir.create(
+  out_dir,
+  recursive=TRUE,
+  showWarnings=FALSE
+)
+
+# ==============================================================================
+# 2. FILE CHECK
+# ==============================================================================
+
+input_files <- c(
+  onset_file,
+  midpoint_file,
+  wake_file
+)
+
+missing_files <- input_files[!file.exists(input_files)]
+
+if(length(missing_files)>0){
+  stop(
+    "Cannot find input file(s):\n",
+    paste(missing_files,collapse="\n")
+  )
+}
+
+cat("\nAll three RCS TIFF files found.\n")
+
+# ==============================================================================
+# 3. READ TIFF IMAGES
+# ==============================================================================
+
+img_onset <- image_read(onset_file)
+img_midpoint <- image_read(midpoint_file)
+img_wake <- image_read(wake_file)
+
+# ==============================================================================
+# 4. CONVERT IMAGES TO GGPLOT OBJECTS
+# ==============================================================================
+
+make_image_plot <- function(img){
+  
+  ggdraw() +
+    draw_image(
+      img,
+      x=0,
+      y=0,
+      width=1,
+      height=1
+    ) +
+    theme_void()
+}
+
+p_onset <- make_image_plot(img_onset)
+p_midpoint <- make_image_plot(img_midpoint)
+p_wake <- make_image_plot(img_wake)
+
+# ==============================================================================
+# 5. ADD PANEL LABELS
+# ==============================================================================
+
+p_onset <- ggdraw(p_onset) +
+  draw_label(
+    "a",
+    x=0.025,
+    y=0.975,
+    hjust=0,
+    vjust=1,
+    fontface="bold",
+    size=14
+  )
+
+
+p_midpoint <- ggdraw(p_midpoint) +
+  draw_label(
+    "b",
+    x=0.025,
+    y=0.975,
+    hjust=0,
+    vjust=1,
+    fontface="bold",
+    size=14
+  )
+
+
+p_wake <- ggdraw(p_wake) +
+  draw_label(
+    "c",
+    x=0.025,
+    y=0.975,
+    hjust=0,
+    vjust=1,
+    fontface="bold",
+    size=14
+  )
+
+# ==============================================================================
+# 6. HORIZONTAL COMBINATION
+# ==============================================================================
+
+figure2 <- plot_grid(
+  p_onset,
+  p_midpoint,
+  p_wake,
+  nrow=1,
+  align="hv",
+  axis="tblr",
+  rel_widths=c(1,1,1)
+)
+
+# ==============================================================================
+# 7. DISPLAY
+# ==============================================================================
+
+print(figure2)
+
+# ==============================================================================
+# 8. EXPORT TIFF
+# ==============================================================================
+
+ggsave(
+  filename=file.path(
+    out_dir,
+    "Figure2_RCS_onset_midpoint_wake.tiff"
+  ),
+  plot=figure2,
+  width=10.5,
+  height=3.2,
+  units="in",
+  dpi=600,
+  compression="lzw",
+  bg="white"
+)
+
+# ==============================================================================
+# 9. EXPORT PDF
+# ==============================================================================
+
+ggsave(
+  filename=file.path(
+    out_dir,
+    "Figure2_RCS_onset_midpoint_wake.pdf"
+  ),
+  plot=figure2,
+  width=10.5,
+  height=3.2,
+  units="in",
+  device=grDevices::cairo_pdf,
+  bg="white"
+)
+
+# ==============================================================================
+# 10. EXPORT PNG
+# ==============================================================================
+
+ggsave(
+  filename=file.path(
+    out_dir,
+    "Figure2_RCS_onset_midpoint_wake.png"
+  ),
+  plot=figure2,
+  width=10.5,
+  height=3.2,
+  units="in",
+  dpi=300,
+  bg="white"
+)
+
+# ==============================================================================
+# 11. QC
+# ==============================================================================
+
+qc <- data.frame(
+  Panel=c("a","b","c"),
+  Domain=c(
+    "Sleep onset",
+    "Sleep midpoint",
+    "Wake time"
+  ),
+  Input_file=c(
+    onset_file,
+    midpoint_file,
+    wake_file
+  )
+)
+
+write.csv(
+  qc,
+  file.path(
+    out_dir,
+    "Figure2_RCS_combination_QC.csv"
+  ),
+  row.names=FALSE
+)
+
+cat("\n============================================================\n")
+cat("FIGURE 2 RCS COMBINATION COMPLETED SUCCESSFULLY\n")
+cat("Panel a: Sleep onset\n")
+cat("Panel b: Sleep midpoint\n")
+cat("Panel c: Wake time\n")
+cat("Layout : horizontal\n")
+cat("Output :",out_dir,"\n")
+cat("============================================================\n")
+
+################################################################################
+# Figure3_FINAL.R
+#
+# Figure 3. Sleep rhythm disruption and depressive symptoms
+#
+# a  Main association
+# b  Restricted cubic spline
+# c  Subgroup analyses
+#
+# Two versions:
+# 1. Clean version
+# 2. Values version
+#
+# Existing FINAL figures only
+# No statistical models are rerun
+#
+# Outputs:
+# PNG + TIFF 600 dpi + PDF
+################################################################################
+
+rm(list=ls()); gc()
+
+library(ggplot2)
+library(cowplot)
+library(magick)
+library(grid)
+
+# ==============================================================================
+# 1. PATHS
+# ==============================================================================
+
+dir_3a <- "D:/code/Figure3a_final_color"
+dir_3b <- "D:/code/Step20_RCS_MI_FINAL_v8"
+dir_3c <- "D:/code/Step22_MI_sleep_rhythm_subgroup_interaction_FINAL/figures"
+
+out_dir <- "D:/code/Figure3_FINAL"
+dir.create(out_dir,recursive=TRUE,showWarnings=FALSE)
+
+# ==============================================================================
+# 2. FIND FINAL FIGURE FILES
+#
+# Prefer TIFF -> PNG
+# PDF is not used as the plotting input to avoid rendering/device differences.
+# Final combined figure is nevertheless exported as PDF.
+# ==============================================================================
+
+find_fig <- function(dir,stem){
+  
+  if(!dir.exists(dir))
+    stop("Directory not found:\n",dir)
+  
+  priority <- c(
+    paste0(stem,".tiff"),
+    paste0(stem,".tif"),
+    paste0(stem,".png")
+  )
+  
+  candidates <- file.path(dir,priority)
+  hit <- candidates[file.exists(candidates)]
+  
+  if(length(hit)==0){
+    
+    fs <- list.files(
+      dir,
+      pattern=paste0("^",stem,"\\.(tiff|tif|png)$"),
+      full.names=TRUE,
+      ignore.case=TRUE
+    )
+    
+    if(length(fs)==0)
+      stop(
+        "Cannot find figure:\n",
+        file.path(dir,stem),
+        "\nExpected TIFF/TIF/PNG."
+      )
+    
+    hit <- fs
+  }
+  
+  hit[1]
+}
+
+# ------------------------------------------------------------------------------
+# Figure 3a
+# ------------------------------------------------------------------------------
+
+file_3a_clean <- find_fig(
+  dir_3a,
+  "Figure3a_clean"
+)
+
+file_3a_values <- find_fig(
+  dir_3a,
+  "Figure3a_OR_CI"
+)
+
+# ------------------------------------------------------------------------------
+# Figure 3b
+# ------------------------------------------------------------------------------
+
+file_3b <- find_fig(
+  dir_3b,
+  "Step20_RCS_curve"
+)
+
+# ------------------------------------------------------------------------------
+# Figure 3c
+# ------------------------------------------------------------------------------
+
+file_3c_clean <- find_fig(
+  dir_3c,
+  "Step22_MI_CMB_subgroup_forest_plot_clean"
+)
+
+file_3c_values <- find_fig(
+  dir_3c,
+  "Step22_MI_CMB_subgroup_forest_plot_with_OR_CI"
+)
+
+# ==============================================================================
+# 3. INPUT QC
+# ==============================================================================
+
+input_files <- c(
+  Figure3a_clean=file_3a_clean,
+  Figure3a_values=file_3a_values,
+  Figure3b=file_3b,
+  Figure3c_clean=file_3c_clean,
+  Figure3c_values=file_3c_values
+)
+
+cat("\n============================================================\n")
+cat("FIGURE 3 FINAL INPUT FILES\n")
+cat("============================================================\n")
+
+for(nm in names(input_files)){
+  cat(nm,":",input_files[[nm]],"\n")
+}
+
+if(any(!file.exists(input_files)))
+  stop("One or more Figure 3 source files do not exist.")
+
+# ==============================================================================
+# 4. READ IMAGES
+# ==============================================================================
+
+read_final_image <- function(path){
+  
+  img <- image_read(path)
+  
+  # Remove unnecessary metadata only; image itself is unchanged
+  img <- image_strip(img)
+  
+  img
+}
+
+img_3a_clean  <- read_final_image(file_3a_clean)
+img_3a_values <- read_final_image(file_3a_values)
+img_3b        <- read_final_image(file_3b)
+img_3c_clean  <- read_final_image(file_3c_clean)
+img_3c_values <- read_final_image(file_3c_values)
+
+# ==============================================================================
+# 5. CONVERT IMAGE TO COWPLOT PANEL
+#
+# Panel letters are added OUTSIDE the source image itself.
+# This keeps original statistical figures unchanged.
+# ==============================================================================
+
+make_panel <- function(img,
+                       letter,
+                       x=0.012,
+                       y=0.992,
+                       letter_size=16){
+  
+  ggdraw() +
+    
+    draw_image(
+      img,
+      x=0,
+      y=0,
+      width=1,
+      height=1
+    ) +
+    
+    draw_label(
+      letter,
+      x=x,
+      y=y,
+      hjust=0,
+      vjust=1,
+      fontface="bold",
+      fontfamily="sans",
+      size=letter_size
+    ) +
+    
+    theme(
+      plot.margin=margin(0,0,0,0)
+    )
+}
+
+# ==============================================================================
+# 6. CLEAN VERSION PANELS
+# ==============================================================================
+
+p3a_clean <- make_panel(
+  img_3a_clean,
+  "a"
+)
+
+p3b_clean <- make_panel(
+  img_3b,
+  "b"
+)
+
+p3c_clean <- make_panel(
+  img_3c_clean,
+  "c"
+)
+
+# ==============================================================================
+# 7. VALUES VERSION PANELS
+# ==============================================================================
+
+p3a_values <- make_panel(
+  img_3a_values,
+  "a"
+)
+
+p3b_values <- make_panel(
+  img_3b,
+  "b"
+)
+
+p3c_values <- make_panel(
+  img_3c_values,
+  "c"
+)
+
+# ==============================================================================
+# 8. COMBINE — CLEAN VERSION
+#
+# a + b on first row
+# c spans full second row
+# ==============================================================================
+
+top_clean <- plot_grid(
+  p3a_clean,
+  p3b_clean,
+  ncol=2,
+  rel_widths=c(1,1),
+  align="hv"
+)
+
+fig3_clean <- plot_grid(
+  top_clean,
+  p3c_clean,
+  ncol=1,
+  
+  # c gets slightly more vertical space because subgroup plot contains more rows
+  rel_heights=c(0.95,1.35),
+  
+  align="v"
+)
+
+# ==============================================================================
+# 9. COMBINE — VALUES VERSION
+# ==============================================================================
+
+top_values <- plot_grid(
+  p3a_values,
+  p3b_values,
+  ncol=2,
+  rel_widths=c(1,1),
+  align="hv"
+)
+
+fig3_values <- plot_grid(
+  top_values,
+  p3c_values,
+  ncol=1,
+  rel_heights=c(0.95,1.35),
+  align="v"
+)
+
+# ==============================================================================
+# 10. PREVIEW
+# ==============================================================================
+
+print(fig3_clean)
+print(fig3_values)
+
+# ==============================================================================
+# 11. EXPORT FUNCTION
+# ==============================================================================
+
+save_figure <- function(plot,prefix,width=8.4,height=9.0){
+  
+  # PNG
+  ggsave(
+    paste0(prefix,".png"),
+    plot=plot,
+    width=width,
+    height=height,
+    units="in",
+    dpi=600,
+    bg="white"
+  )
+  
+  # TIFF — publication version
+  ggsave(
+    paste0(prefix,".tiff"),
+    plot=plot,
+    width=width,
+    height=height,
+    units="in",
+    dpi=600,
+    compression="lzw",
+    bg="white"
+  )
+  
+  # PDF
+  ggsave(
+    paste0(prefix,".pdf"),
+    plot=plot,
+    width=width,
+    height=height,
+    units="in",
+    device=grDevices::cairo_pdf,
+    bg="white"
+  )
+}
+
+# ==============================================================================
+# 12. EXPORT
+# ==============================================================================
+
+save_figure(
+  fig3_clean,
+  file.path(
+    out_dir,
+    "Figure3_FINAL_clean"
+  ),
+  width=8.4,
+  height=9.0
+)
+
+save_figure(
+  fig3_values,
+  file.path(
+    out_dir,
+    "Figure3_FINAL_OR_CI"
+  ),
+  width=8.8,
+  height=9.0
+)
+
+# ==============================================================================
+# 13. FINAL OUTPUT QC
+# ==============================================================================
+
+expected <- file.path(
+  out_dir,
+  c(
+    "Figure3_FINAL_clean.png",
+    "Figure3_FINAL_clean.tiff",
+    "Figure3_FINAL_clean.pdf",
+    "Figure3_FINAL_OR_CI.png",
+    "Figure3_FINAL_OR_CI.tiff",
+    "Figure3_FINAL_OR_CI.pdf"
+  )
+)
+
+missing_output <- expected[!file.exists(expected)]
+
+if(length(missing_output)>0){
+  
+  stop(
+    "Missing Figure 3 output:\n",
+    paste(
+      missing_output,
+      collapse="\n"
+    )
+  )
+}
+
+# ==============================================================================
+# 14. SAVE INPUT / OUTPUT QC
+# ==============================================================================
+
+qc <- data.frame(
+  Item=c(
+    "Figure 3a clean",
+    "Figure 3a values",
+    "Figure 3b RCS",
+    "Figure 3c clean",
+    "Figure 3c values",
+    "Layout",
+    "Panel labels",
+    "Statistical recalculation",
+    "TIFF resolution"
+  ),
+  Value=c(
+    file_3a_clean,
+    file_3a_values,
+    file_3b,
+    file_3c_clean,
+    file_3c_values,
+    "a-b top row; c full-width bottom row",
+    "lowercase a, b, c at upper-left",
+    "None; frozen final figures only",
+    "600 dpi LZW"
+  )
+)
+
+write.csv(
+  qc,
+  file.path(
+    out_dir,
+    "Figure3_FINAL_QC.csv"
+  ),
+  row.names=FALSE
+)
+
+cat("\n============================================================\n")
+cat("FIGURE 3 FINAL COMPLETE\n")
+cat("============================================================\n")
+
+cat("\nClean version:\n")
+cat(
+  file.path(
+    out_dir,
+    "Figure3_FINAL_clean.tiff"
+  ),
+  "\n"
+)
+
+cat("\nValues version:\n")
+cat(
+  file.path(
+    out_dir,
+    "Figure3_FINAL_OR_CI.tiff"
+  ),
+  "\n"
+)
+
+cat("\nAll source figures preserved unchanged.\n")
+cat("No statistical models were rerun.\n")
+cat("PNG + TIFF 600 dpi + PDF generated.\n")
+cat("FIGURE 3 FINAL LOCK: PASS\n")
+cat("============================================================\n")
+
+################################################################################
+# Figure4_INTEGRATED_FINAL.R
+#
+# Figure 4. Exploratory environmental and behavioral analyses
+#
+# Integrated publication-style forest figure
+#
+# Sections:
+# 1. Sun-related behaviors -> depressive symptoms        [OR]
+# 2. Sun-related behaviors -> sleep rhythm disruption    [Beta]
+# 3. Daytime outdoor time -> depressive symptoms         [OR]
+# 4. Daytime outdoor time -> sleep rhythm disruption     [Beta]
+#
+# IMPORTANT:
+# - Fully adjusted estimates only
+# - Same frozen Step24/25/27/28 results
+# - OR and beta retain separate valid numerical axes
+# - Four section-specific colors
+# - No significance-dependent colors
+# - Clean + values versions
+# - PNG + TIFF 600 dpi + PDF
+################################################################################
+
+rm(list=ls()); gc()
+
+library(tidyverse)
+library(ggplot2)
+library(cowplot)
+library(grid)
+
+# ==============================================================================
+# 1. PATHS
+# ==============================================================================
+
+root_dir <- "D:/code"
+out_dir <- file.path(root_dir,"Figure4_INTEGRATED_FINAL")
+dir.create(out_dir,recursive=TRUE,showWarnings=FALSE)
+
+file24 <- file.path(
+  root_dir,
+  "Step24_DEQ_behavior_individual_model_FINAL",
+  "Step24_publication_results.csv"
+)
+
+file25 <- file.path(
+  root_dir,
+  "Step25_DEQ_behavior_sleep_rhythm_FINAL_ALL_FDR",
+  "Step25_publication_results_ALL_FDR_FINAL.csv"
+)
+
+file27 <- file.path(
+  root_dir,
+  "Step27_Outdoor_time_sleep_rhythm_FINAL",
+  "Step27_publication_results_FINAL.csv"
+)
+
+file28 <- file.path(
+  root_dir,
+  "Step28_Outdoor_time_depression_FINAL",
+  "Step28_publication_results_FINAL.csv"
+)
+
+files <- c(
+  Step24=file24,
+  Step25=file25,
+  Step27=file27,
+  Step28=file28
+)
+
+for(nm in names(files)){
+  if(!file.exists(files[[nm]])){
+    stop(nm," final file not found:\n",files[[nm]])
+  }
+}
+
+cat("\nAll Figure 4 FINAL files found.\n")
+
+# ==============================================================================
+# 2. LOAD
+# ==============================================================================
+
+d24 <- read_csv(file24,show_col_types=FALSE)
+d25 <- read_csv(file25,show_col_types=FALSE)
+d27 <- read_csv(file27,show_col_types=FALSE)
+d28 <- read_csv(file28,show_col_types=FALSE)
+
+# ==============================================================================
+# 3. HELPERS
+# ==============================================================================
+
+pick_col <- function(dat,x){
+  z <- x[x %in% names(dat)]
+  if(length(z)==0) NULL else z[1]
+}
+
+select_full <- function(dat){
+  
+  mc <- pick_col(dat,c("Model","model","Model_label"))
+  
+  if(is.null(mc)){
+    stop("Model column not found.")
+  }
+  
+  x <- as.character(dat[[mc]])
+  
+  keep <- grepl(
+    "^Model ?2$|Model2_full|Model2$|fully adjusted",
+    x,
+    ignore.case=TRUE
+  )
+  
+  if(!any(keep)){
+    stop(
+      "Fully adjusted model not identified. Models: ",
+      paste(unique(x),collapse=", ")
+    )
+  }
+  
+  dat[keep,,drop=FALSE]
+}
+
+parse_ci <- function(x){
+  
+  x <- gsub("−","-",x)
+  x <- gsub("–","-",x)
+  
+  map_dfr(
+    str_extract_all(x,"-?[0-9]+\\.?[0-9]*"),
+    function(z){
+      z <- as.numeric(z)
+      
+      tibble(
+        estimate=if(length(z)>=1) z[1] else NA_real_,
+        lower=if(length(z)>=2) z[2] else NA_real_,
+        upper=if(length(z)>=3) z[3] else NA_real_
+      )
+    }
+  )
+}
+
+extract_effect <- function(dat,type=c("OR","Beta")){
+  
+  type <- match.arg(type)
+  
+  ec <- pick_col(
+    dat,
+    if(type=="OR") c("OR","or")
+    else c("Beta","beta")
+  )
+  
+  lc <- pick_col(
+    dat,
+    c(
+      "Lower_95CI",
+      "Lower95",
+      "CI_lower",
+      "lower95",
+      "Lower_beta"
+    )
+  )
+  
+  uc <- pick_col(
+    dat,
+    c(
+      "Upper_95CI",
+      "Upper95",
+      "CI_upper",
+      "upper95",
+      "Upper_beta"
+    )
+  )
+  
+  if(!is.null(ec) && !is.null(lc) && !is.null(uc)){
+    
+    return(
+      tibble(
+        estimate=as.numeric(dat[[ec]]),
+        lower=as.numeric(dat[[lc]]),
+        upper=as.numeric(dat[[uc]])
+      )
+    )
+  }
+  
+  tc <- pick_col(
+    dat,
+    if(type=="OR"){
+      c("OR (95% CI)","OR_95CI","OR_CI")
+    }else{
+      c("Beta (95% CI)","Beta_95CI","Beta_CI")
+    }
+  )
+  
+  if(is.null(tc)){
+    stop("Effect estimate / CI columns not identified.")
+  }
+  
+  parse_ci(dat[[tc]])
+}
+
+# ==============================================================================
+# 4. PREPARE SUN-RELATED BEHAVIOR RESULTS
+# ==============================================================================
+
+prep_behavior <- function(dat,type){
+  
+  dat <- select_full(dat)
+  
+  lc <- pick_col(
+    dat,
+    c("Behavior","Exposure","behavior","exposure")
+  )
+  
+  if(is.null(lc)){
+    stop("Behavior/exposure column not found.")
+  }
+  
+  raw_label <- as.character(dat[[lc]])
+  
+  keep <- !grepl(
+    "sensitivity",
+    raw_label,
+    ignore.case=TRUE
+  )
+  
+  dat <- dat[keep,,drop=FALSE]
+  raw_label <- raw_label[keep]
+  
+  eff <- extract_effect(dat,type)
+  
+  label <- case_when(
+    grepl("shade",raw_label,ignore.case=TRUE) ~
+      "Frequent shade seeking",
+    
+    grepl("long.*sleeve|sleeve",raw_label,ignore.case=TRUE) ~
+      "Frequent long-sleeved clothing use",
+    
+    grepl("sunscreen",raw_label,ignore.case=TRUE) ~
+      "Frequent sunscreen use",
+    
+    TRUE ~ raw_label
+  )
+  
+  tibble(
+    label=label,
+    estimate=eff$estimate,
+    lower=eff$lower,
+    upper=eff$upper
+  ) %>%
+    distinct(label,.keep_all=TRUE) %>%
+    filter(
+      label %in% c(
+        "Frequent shade seeking",
+        "Frequent long-sleeved clothing use",
+        "Frequent sunscreen use"
+      )
+    ) %>%
+    mutate(
+      label=factor(
+        label,
+        levels=rev(c(
+          "Frequent shade seeking",
+          "Frequent long-sleeved clothing use",
+          "Frequent sunscreen use"
+        ))
+      )
+    )
+}
+
+# ==============================================================================
+# 5. PREPARE OUTDOOR-TIME RESULTS
+# ==============================================================================
+
+prep_outdoor <- function(dat,type){
+  
+  dat <- select_full(dat)
+  
+  lc <- pick_col(
+    dat,
+    c("Exposure","Behavior","exposure","behavior")
+  )
+  
+  if(is.null(lc)){
+    stop("Outdoor exposure column not found.")
+  }
+  
+  raw_label <- as.character(dat[[lc]])
+  
+  eff <- extract_effect(dat,type)
+  
+  label <- case_when(
+    
+    grepl("non-work|nonwork",raw_label,ignore.case=TRUE) ~
+      "Non-work/non-school-day outdoor time",
+    
+    grepl("work/school|workday",raw_label,ignore.case=TRUE) ~
+      "Work/school-day outdoor time",
+    
+    grepl("mean",raw_label,ignore.case=TRUE) ~
+      "Mean daytime outdoor time*",
+    
+    TRUE ~ raw_label
+  )
+  
+  tibble(
+    label=label,
+    estimate=eff$estimate,
+    lower=eff$lower,
+    upper=eff$upper
+  ) %>%
+    distinct(label,.keep_all=TRUE) %>%
+    filter(
+      label %in% c(
+        "Work/school-day outdoor time",
+        "Non-work/non-school-day outdoor time",
+        "Mean daytime outdoor time*"
+      )
+    ) %>%
+    mutate(
+      label=factor(
+        label,
+        levels=rev(c(
+          "Work/school-day outdoor time",
+          "Non-work/non-school-day outdoor time",
+          "Mean daytime outdoor time*"
+        ))
+      )
+    )
+}
+
+# ==============================================================================
+# 6. FINAL DATA
+# ==============================================================================
+
+A <- prep_behavior(d24,"OR")
+B <- prep_behavior(d25,"Beta")
+C <- prep_outdoor(d27,"Beta")
+D <- prep_outdoor(d28,"OR")
+
+plot_qc <- bind_rows(
+  A %>% mutate(
+    Section="A",
+    Measure="OR"
+  ),
+  B %>% mutate(
+    Section="B",
+    Measure="Beta"
+  ),
+  C %>% mutate(
+    Section="C",
+    Measure="Beta"
+  ),
+  D %>% mutate(
+    Section="D",
+    Measure="OR"
+  )
+)
+
+cat("\nFigure 4 plotting data:\n")
+print(plot_qc,n=Inf)
+
+if(
+  any(!is.finite(plot_qc$estimate)) ||
+  any(!is.finite(plot_qc$lower)) ||
+  any(!is.finite(plot_qc$upper))
+){
+  stop("Non-finite estimate/CI detected.")
+}
+
+if(
+  any(plot_qc$lower>plot_qc$estimate) ||
+  any(plot_qc$upper<plot_qc$estimate)
+){
+  stop("Invalid CI ordering detected.")
+}
+
+if(
+  nrow(A)!=3 ||
+  nrow(B)!=3 ||
+  nrow(C)!=3 ||
+  nrow(D)!=3
+){
+  stop("Each Figure 4 section must contain exactly three estimates.")
+}
+
+write_csv(
+  plot_qc,
+  file.path(
+    out_dir,
+    "Figure4_integrated_plot_values_FINAL.csv"
+  )
+)
+
+# ==============================================================================
+# 7. COLORS
+# ==============================================================================
+#
+# Four colors distinguish analysis sections only.
+# They DO NOT indicate statistical significance.
+#
+# Color-blind-friendly palette
+# ==============================================================================
+
+col_A <- "#0072B2"
+col_B <- "#D55E00"
+col_C <- "#009E73"
+col_D <- "#CC79A7"
+
+# ==============================================================================
+# 8. JOURNAL THEME
+# ==============================================================================
+
+theme_pub <- function(base_size=10){
+  theme_classic(base_size=base_size,base_family="sans")+
+    theme(
+      axis.line.y=element_blank(),
+      axis.ticks.y=element_blank(),
+      axis.line.x=element_line(colour="black",linewidth=0.45),
+      axis.ticks.x=element_line(colour="black",linewidth=0.35),
+      axis.text=element_text(colour="black"),
+      axis.text.x=element_text(size=base_size*0.90),
+      axis.text.y=element_text(size=base_size*0.92),
+      axis.title.x=element_text(size=base_size,margin=margin(t=5)),
+      axis.title.y=element_blank(),
+      plot.title=element_text(
+        face="bold",
+        size=base_size*1.25,
+        hjust=0,
+        margin=margin(b=2)
+      ),
+      plot.margin=margin(5,8,4,5)
+    )
+}
+
+# ==============================================================================
+# 9. MINIMALIST COEFFICIENT PLOT
+#    a–d fixed to upper-left corner of EACH COMPLETE PANEL
+# ==============================================================================
+
+make_section <- function(dat,panel_letter,type=c("OR","Beta"),
+                         colour,xlab,show_values=FALSE){
+  
+  type <- match.arg(type)
+  ref <- if(type=="OR") 1 else 0
+  
+  xmin <- min(c(dat$lower,ref),na.rm=TRUE)
+  xmax <- max(c(dat$upper,ref),na.rm=TRUE)
+  span <- xmax-xmin
+  
+  if(!is.finite(span) || span<=0)
+    span <- if(type=="OR") 0.25 else 0.10
+  
+  xmin <- xmin-0.50*span
+  xmax <- xmax+0.50*span
+  if(type=="OR") xmin <- max(0.01,xmin)
+  
+  d <- dat %>%
+    mutate(
+      value_text=if(type=="OR")
+        sprintf("%.2f (%.2f–%.2f)",estimate,lower,upper)
+      else
+        sprintf("%.3f (%.3f–%.3f)",estimate,lower,upper)
+    )
+  
+  # --------------------------------------------------------------------------
+  # Forest component
+  # --------------------------------------------------------------------------
+  
+  p <- ggplot(d,aes(x=estimate,y=label))+
+    
+    geom_vline(
+      xintercept=ref,
+      linetype="dashed",
+      linewidth=0.45,
+      colour="grey55"
+    )+
+    
+    geom_segment(
+      aes(x=lower,xend=upper,y=label,yend=label),
+      linewidth=0.85,
+      colour=colour,
+      lineend="round"
+    )+
+    
+    geom_point(
+      shape=16,
+      size=3.1,
+      colour=colour
+    )+
+    
+    scale_x_continuous(
+      limits=c(xmin,xmax),
+      breaks=pretty(c(xmin,xmax),n=5),
+      expand=expansion(mult=c(0,0))
+    )+
+    
+    labs(
+      x=xlab,
+      y=NULL
+    )+
+    
+    coord_cartesian(clip="off")+
+    
+    theme_pub()
+  
+  # ==========================================================================
+  # CLEAN VERSION
+  # Add panel letter AFTER plot construction
+  # ==========================================================================
+  
+  if(!show_values){
+    
+    panel_core <- ggdraw(p)
+    
+    panel_final <- panel_core +
+      draw_label(
+        panel_letter,
+        x=0.006,
+        y=0.985,
+        hjust=0,
+        vjust=1,
+        fontface="bold",
+        fontfamily="sans",
+        size=15
+      )
+    
+    return(panel_final)
+  }
+  
+  # ==========================================================================
+  # VALUES COLUMN
+  # ==========================================================================
+  
+  value_plot <- ggplot(d,aes(x=1,y=label))+
+    
+    geom_text(
+      aes(label=value_text),
+      hjust=0,
+      size=3.05,
+      family="sans",
+      colour="black"
+    )+
+    
+    annotate(
+      "text",
+      x=1,
+      y=Inf,
+      label=if(type=="OR")
+        "OR (95% CI)"
+      else
+        "\u03b2 (95% CI)",
+      hjust=0,
+      vjust=1.35,
+      fontface="bold",
+      family="sans",
+      size=3.0
+    )+
+    
+    scale_x_continuous(
+      limits=c(1,2.35),
+      expand=c(0,0)
+    )+
+    
+    scale_y_discrete(
+      limits=levels(d$label)
+    )+
+    
+    coord_cartesian(clip="off")+
+    
+    theme_void(base_family="sans")+
+    
+    theme(
+      plot.margin=margin(27,2,19,8)
+    )
+  
+  # --------------------------------------------------------------------------
+  # Combine forest + numerical column FIRST
+  # --------------------------------------------------------------------------
+  
+  panel_core <- plot_grid(
+    p,
+    value_plot,
+    nrow=1,
+    rel_widths=c(0.75,0.25),
+    align="h",
+    axis="tb"
+  )
+  
+  # --------------------------------------------------------------------------
+  # THEN add a/b/c/d relative to the WHOLE panel
+  # --------------------------------------------------------------------------
+  
+  panel_final <- ggdraw(panel_core) +
+    draw_label(
+      panel_letter,
+      x=0.006,
+      y=0.985,
+      hjust=0,
+      vjust=1,
+      fontface="bold",
+      fontfamily="sans",
+      size=15
+    )
+  
+  panel_final
+}
+# ==============================================================================
+# 10. FOUR PANELS
+#     No subtitles; lowercase a–d only
+# ==============================================================================
+
+pA_clean <- make_section(
+  A,"a","OR",col_A,
+  "Odds ratio",
+  FALSE
+)
+
+pB_clean <- make_section(
+  B,"b","Beta",col_B,
+  "\u03b2 (SD units)",
+  FALSE
+)
+
+pC_clean <- make_section(
+  D,"c","OR",col_C,
+  "Odds ratio per additional hour",
+  FALSE
+)
+
+pD_clean <- make_section(
+  C,"d","Beta",col_D,
+  "\u03b2 per additional hour",
+  FALSE
+)
+
+pA_values <- make_section(
+  A,"a","OR",col_A,
+  "Odds ratio",
+  TRUE
+)
+
+pB_values <- make_section(
+  B,"b","Beta",col_B,
+  "\u03b2 (SD units)",
+  TRUE
+)
+
+pC_values <- make_section(
+  D,"c","OR",col_C,
+  "Odds ratio per additional hour",
+  TRUE
+)
+
+pD_values <- make_section(
+  C,"d","Beta",col_D,
+  "\u03b2 per additional hour",
+  TRUE
+)
+
+# ==============================================================================
+# 11. CLEAN VERSION — VERTICAL 4 × 1
+# ==============================================================================
+
+fig_clean_core <- plot_grid(
+  pA_clean,
+  pB_clean,
+  pC_clean,
+  pD_clean,
+  ncol=1,
+  align="v",
+  axis="lr",
+  rel_heights=c(1,1,1,1)
+)
+
+fig_clean <- ggdraw(fig_clean_core)+
+  draw_label(
+    "* Secondary exploratory exposure",
+    x=0.005,
+    y=0.002,
+    hjust=0,
+    vjust=0,
+    fontfamily="sans",
+    size=7.5
+  )
+
+# ==============================================================================
+# 12. VALUES VERSION — VERTICAL 4 × 1
+# ==============================================================================
+
+fig_values_core <- plot_grid(
+  pA_values,
+  pB_values,
+  pC_values,
+  pD_values,
+  ncol=1,
+  align="v",
+  axis="lr",
+  rel_heights=c(1,1,1,1)
+)
+
+fig_values <- ggdraw(fig_values_core)+
+  draw_label(
+    "* Secondary exploratory exposure",
+    x=0.005,
+    y=0.002,
+    hjust=0,
+    vjust=0,
+    fontfamily="sans",
+    size=7.5
+  )
+
+# ==============================================================================
+# 13. PREVIEW
+# ==============================================================================
+
+print(fig_clean)
+print(fig_values)
+
+# ==============================================================================
+# 14. EXPORT
+# ==============================================================================
+
+save_triplet <- function(plot,prefix,width,height){
+  
+  ggsave(
+    paste0(prefix,".png"),
+    plot=plot,
+    width=width,
+    height=height,
+    units="in",
+    dpi=600,
+    bg="white"
+  )
+  
+  ggsave(
+    paste0(prefix,".tiff"),
+    plot=plot,
+    width=width,
+    height=height,
+    units="in",
+    dpi=600,
+    compression="lzw",
+    bg="white"
+  )
+  
+  ggsave(
+    paste0(prefix,".pdf"),
+    plot=plot,
+    width=width,
+    height=height,
+    units="in",
+    device=grDevices::cairo_pdf,
+    bg="white"
+  )
+}
+
+save_triplet(
+  fig_clean,
+  file.path(out_dir,"Figure4_abcd_vertical_clean"),
+  width=7.4,
+  height=8.3
+)
+
+save_triplet(
+  fig_values,
+  file.path(out_dir,"Figure4_abcd_vertical_values"),
+  width=9.2,
+  height=8.3
+)
+
+# ==============================================================================
+# 15. FINAL QC
+# ==============================================================================
+
+expected_abcd <- file.path(
+  out_dir,
+  c(
+    "Figure4_abcd_vertical_clean.png",
+    "Figure4_abcd_vertical_clean.tiff",
+    "Figure4_abcd_vertical_clean.pdf",
+    "Figure4_abcd_vertical_values.png",
+    "Figure4_abcd_vertical_values.tiff",
+    "Figure4_abcd_vertical_values.pdf"
+  )
+)
+
+missing_output <- expected_abcd[!file.exists(expected_abcd)]
+
+if(length(missing_output)>0){
+  stop(
+    "Missing Figure 4 output:\n",
+    paste(missing_output,collapse="\n")
+  )
+}
+
+cat("\n============================================================\n")
+cat("FIGURE 4 VERTICAL a–d FINAL COMPLETE\n")
+cat("Layout: 4 × 1 vertical\n")
+cat("Panel subtitles removed\n")
+cat("Lowercase panel labels a–d retained at upper left\n")
+cat("Four colors represent analysis panels only\n")
+cat("OR and beta scales remain separate\n")
+cat("Statistical estimates unchanged\n")
+cat("============================================================\n")
+
+for(f in expected_abcd)
+  cat("FOUND:",f,"\n")################################################################################
+# Figure4_INTEGRATED_FINAL.R
+#
+# Figure 4. Exploratory environmental and behavioral analyses
+#
+# Integrated publication-style forest figure
+#
+# Sections:
+# 1. Sun-related behaviors -> depressive symptoms        [OR]
+# 2. Sun-related behaviors -> sleep rhythm disruption    [Beta]
+# 3. Daytime outdoor time -> depressive symptoms         [OR]
+# 4. Daytime outdoor time -> sleep rhythm disruption     [Beta]
+#
+# IMPORTANT:
+# - Fully adjusted estimates only
+# - Same frozen Step24/25/27/28 results
+# - OR and beta retain separate valid numerical axes
+# - Four section-specific colors
+# - No significance-dependent colors
+# - Clean + values versions
+# - PNG + TIFF 600 dpi + PDF
+################################################################################
+
+rm(list=ls()); gc()
+
+library(tidyverse)
+library(ggplot2)
+library(cowplot)
+library(grid)
+
+# ==============================================================================
+# 1. PATHS
+# ==============================================================================
+
+root_dir <- "D:/code"
+out_dir <- file.path(root_dir,"Figure4_INTEGRATED_FINAL")
+dir.create(out_dir,recursive=TRUE,showWarnings=FALSE)
+
+file24 <- file.path(
+  root_dir,
+  "Step24_DEQ_behavior_individual_model_FINAL",
+  "Step24_publication_results.csv"
+)
+
+file25 <- file.path(
+  root_dir,
+  "Step25_DEQ_behavior_sleep_rhythm_FINAL_ALL_FDR",
+  "Step25_publication_results_ALL_FDR_FINAL.csv"
+)
+
+file27 <- file.path(
+  root_dir,
+  "Step27_Outdoor_time_sleep_rhythm_FINAL",
+  "Step27_publication_results_FINAL.csv"
+)
+
+file28 <- file.path(
+  root_dir,
+  "Step28_Outdoor_time_depression_FINAL",
+  "Step28_publication_results_FINAL.csv"
+)
+
+files <- c(
+  Step24=file24,
+  Step25=file25,
+  Step27=file27,
+  Step28=file28
+)
+
+for(nm in names(files)){
+  if(!file.exists(files[[nm]])){
+    stop(nm," final file not found:\n",files[[nm]])
+  }
+}
+
+cat("\nAll Figure 4 FINAL files found.\n")
+
+# ==============================================================================
+# 2. LOAD
+# ==============================================================================
+
+d24 <- read_csv(file24,show_col_types=FALSE)
+d25 <- read_csv(file25,show_col_types=FALSE)
+d27 <- read_csv(file27,show_col_types=FALSE)
+d28 <- read_csv(file28,show_col_types=FALSE)
+
+# ==============================================================================
+# 3. HELPERS
+# ==============================================================================
+
+pick_col <- function(dat,x){
+  z <- x[x %in% names(dat)]
+  if(length(z)==0) NULL else z[1]
+}
+
+select_full <- function(dat){
+  
+  mc <- pick_col(dat,c("Model","model","Model_label"))
+  
+  if(is.null(mc)){
+    stop("Model column not found.")
+  }
+  
+  x <- as.character(dat[[mc]])
+  
+  keep <- grepl(
+    "^Model ?2$|Model2_full|Model2$|fully adjusted",
+    x,
+    ignore.case=TRUE
+  )
+  
+  if(!any(keep)){
+    stop(
+      "Fully adjusted model not identified. Models: ",
+      paste(unique(x),collapse=", ")
+    )
+  }
+  
+  dat[keep,,drop=FALSE]
+}
+
+parse_ci <- function(x){
+  
+  x <- gsub("−","-",x)
+  x <- gsub("–","-",x)
+  
+  map_dfr(
+    str_extract_all(x,"-?[0-9]+\\.?[0-9]*"),
+    function(z){
+      z <- as.numeric(z)
+      
+      tibble(
+        estimate=if(length(z)>=1) z[1] else NA_real_,
+        lower=if(length(z)>=2) z[2] else NA_real_,
+        upper=if(length(z)>=3) z[3] else NA_real_
+      )
+    }
+  )
+}
+
+extract_effect <- function(dat,type=c("OR","Beta")){
+  
+  type <- match.arg(type)
+  
+  ec <- pick_col(
+    dat,
+    if(type=="OR") c("OR","or")
+    else c("Beta","beta")
+  )
+  
+  lc <- pick_col(
+    dat,
+    c(
+      "Lower_95CI",
+      "Lower95",
+      "CI_lower",
+      "lower95",
+      "Lower_beta"
+    )
+  )
+  
+  uc <- pick_col(
+    dat,
+    c(
+      "Upper_95CI",
+      "Upper95",
+      "CI_upper",
+      "upper95",
+      "Upper_beta"
+    )
+  )
+  
+  if(!is.null(ec) && !is.null(lc) && !is.null(uc)){
+    
+    return(
+      tibble(
+        estimate=as.numeric(dat[[ec]]),
+        lower=as.numeric(dat[[lc]]),
+        upper=as.numeric(dat[[uc]])
+      )
+    )
+  }
+  
+  tc <- pick_col(
+    dat,
+    if(type=="OR"){
+      c("OR (95% CI)","OR_95CI","OR_CI")
+    }else{
+      c("Beta (95% CI)","Beta_95CI","Beta_CI")
+    }
+  )
+  
+  if(is.null(tc)){
+    stop("Effect estimate / CI columns not identified.")
+  }
+  
+  parse_ci(dat[[tc]])
+}
+
+# ==============================================================================
+# 4. PREPARE SUN-RELATED BEHAVIOR RESULTS
+# ==============================================================================
+
+prep_behavior <- function(dat,type){
+  
+  dat <- select_full(dat)
+  
+  lc <- pick_col(
+    dat,
+    c("Behavior","Exposure","behavior","exposure")
+  )
+  
+  if(is.null(lc)){
+    stop("Behavior/exposure column not found.")
+  }
+  
+  raw_label <- as.character(dat[[lc]])
+  
+  keep <- !grepl(
+    "sensitivity",
+    raw_label,
+    ignore.case=TRUE
+  )
+  
+  dat <- dat[keep,,drop=FALSE]
+  raw_label <- raw_label[keep]
+  
+  eff <- extract_effect(dat,type)
+  
+  label <- case_when(
+    grepl("shade",raw_label,ignore.case=TRUE) ~
+      "Frequent shade seeking",
+    
+    grepl("long.*sleeve|sleeve",raw_label,ignore.case=TRUE) ~
+      "Frequent long-sleeved clothing use",
+    
+    grepl("sunscreen",raw_label,ignore.case=TRUE) ~
+      "Frequent sunscreen use",
+    
+    TRUE ~ raw_label
+  )
+  
+  tibble(
+    label=label,
+    estimate=eff$estimate,
+    lower=eff$lower,
+    upper=eff$upper
+  ) %>%
+    distinct(label,.keep_all=TRUE) %>%
+    filter(
+      label %in% c(
+        "Frequent shade seeking",
+        "Frequent long-sleeved clothing use",
+        "Frequent sunscreen use"
+      )
+    ) %>%
+    mutate(
+      label=factor(
+        label,
+        levels=rev(c(
+          "Frequent shade seeking",
+          "Frequent long-sleeved clothing use",
+          "Frequent sunscreen use"
+        ))
+      )
+    )
+}
+
+# ==============================================================================
+# 5. PREPARE OUTDOOR-TIME RESULTS
+# ==============================================================================
+
+prep_outdoor <- function(dat,type){
+  
+  dat <- select_full(dat)
+  
+  lc <- pick_col(
+    dat,
+    c("Exposure","Behavior","exposure","behavior")
+  )
+  
+  if(is.null(lc)){
+    stop("Outdoor exposure column not found.")
+  }
+  
+  raw_label <- as.character(dat[[lc]])
+  
+  eff <- extract_effect(dat,type)
+  
+  label <- case_when(
+    
+    grepl("non-work|nonwork",raw_label,ignore.case=TRUE) ~
+      "Non-work/non-school-day outdoor time",
+    
+    grepl("work/school|workday",raw_label,ignore.case=TRUE) ~
+      "Work/school-day outdoor time",
+    
+    grepl("mean",raw_label,ignore.case=TRUE) ~
+      "Mean daytime outdoor time*",
+    
+    TRUE ~ raw_label
+  )
+  
+  tibble(
+    label=label,
+    estimate=eff$estimate,
+    lower=eff$lower,
+    upper=eff$upper
+  ) %>%
+    distinct(label,.keep_all=TRUE) %>%
+    filter(
+      label %in% c(
+        "Work/school-day outdoor time",
+        "Non-work/non-school-day outdoor time",
+        "Mean daytime outdoor time*"
+      )
+    ) %>%
+    mutate(
+      label=factor(
+        label,
+        levels=rev(c(
+          "Work/school-day outdoor time",
+          "Non-work/non-school-day outdoor time",
+          "Mean daytime outdoor time*"
+        ))
+      )
+    )
+}
+
+# ==============================================================================
+# 6. FINAL DATA
+# ==============================================================================
+
+A <- prep_behavior(d24,"OR")
+B <- prep_behavior(d25,"Beta")
+C <- prep_outdoor(d27,"Beta")
+D <- prep_outdoor(d28,"OR")
+
+plot_qc <- bind_rows(
+  A %>% mutate(
+    Section="A",
+    Measure="OR"
+  ),
+  B %>% mutate(
+    Section="B",
+    Measure="Beta"
+  ),
+  C %>% mutate(
+    Section="C",
+    Measure="Beta"
+  ),
+  D %>% mutate(
+    Section="D",
+    Measure="OR"
+  )
+)
+
+cat("\nFigure 4 plotting data:\n")
+print(plot_qc,n=Inf)
+
+if(
+  any(!is.finite(plot_qc$estimate)) ||
+  any(!is.finite(plot_qc$lower)) ||
+  any(!is.finite(plot_qc$upper))
+){
+  stop("Non-finite estimate/CI detected.")
+}
+
+if(
+  any(plot_qc$lower>plot_qc$estimate) ||
+  any(plot_qc$upper<plot_qc$estimate)
+){
+  stop("Invalid CI ordering detected.")
+}
+
+if(
+  nrow(A)!=3 ||
+  nrow(B)!=3 ||
+  nrow(C)!=3 ||
+  nrow(D)!=3
+){
+  stop("Each Figure 4 section must contain exactly three estimates.")
+}
+
+write_csv(
+  plot_qc,
+  file.path(
+    out_dir,
+    "Figure4_integrated_plot_values_FINAL.csv"
+  )
+)
+
+# ==============================================================================
+# 7. COLORS
+# ==============================================================================
+#
+# Four colors distinguish analysis sections only.
+# They DO NOT indicate statistical significance.
+#
+# Color-blind-friendly palette
+# ==============================================================================
+
+col_A <- "#0072B2"
+col_B <- "#D55E00"
+col_C <- "#009E73"
+col_D <- "#CC79A7"
+
+# ==============================================================================
+# 8. JOURNAL THEME
+# ==============================================================================
+
+theme_pub <- function(base_size=10){
+  theme_classic(base_size=base_size,base_family="sans")+
+    theme(
+      axis.line.y=element_blank(),
+      axis.ticks.y=element_blank(),
+      axis.line.x=element_line(colour="black",linewidth=0.45),
+      axis.ticks.x=element_line(colour="black",linewidth=0.35),
+      axis.text=element_text(colour="black"),
+      axis.text.x=element_text(size=base_size*0.90),
+      axis.text.y=element_text(size=base_size*0.92),
+      axis.title.x=element_text(size=base_size,margin=margin(t=5)),
+      axis.title.y=element_blank(),
+      plot.title=element_text(
+        face="bold",
+        size=base_size*1.25,
+        hjust=0,
+        margin=margin(b=2)
+      ),
+      plot.margin=margin(5,8,4,5)
+    )
+}
+
+# ==============================================================================
+# 9. MINIMALIST COEFFICIENT PLOT
+#    a–d fixed to upper-left corner of EACH COMPLETE PANEL
+# ==============================================================================
+
+make_section <- function(dat,panel_letter,type=c("OR","Beta"),
+                         colour,xlab,show_values=FALSE){
+  
+  type <- match.arg(type)
+  ref <- if(type=="OR") 1 else 0
+  
+  xmin <- min(c(dat$lower,ref),na.rm=TRUE)
+  xmax <- max(c(dat$upper,ref),na.rm=TRUE)
+  span <- xmax-xmin
+  
+  if(!is.finite(span) || span<=0)
+    span <- if(type=="OR") 0.25 else 0.10
+  
+  xmin <- xmin-0.50*span
+  xmax <- xmax+0.50*span
+  if(type=="OR") xmin <- max(0.01,xmin)
+  
+  d <- dat %>%
+    mutate(
+      value_text=if(type=="OR")
+        sprintf("%.2f (%.2f–%.2f)",estimate,lower,upper)
+      else
+        sprintf("%.3f (%.3f–%.3f)",estimate,lower,upper)
+    )
+  
+  # --------------------------------------------------------------------------
+  # Forest component
+  # --------------------------------------------------------------------------
+  
+  p <- ggplot(d,aes(x=estimate,y=label))+
+    
+    geom_vline(
+      xintercept=ref,
+      linetype="dashed",
+      linewidth=0.45,
+      colour="grey55"
+    )+
+    
+    geom_segment(
+      aes(x=lower,xend=upper,y=label,yend=label),
+      linewidth=0.85,
+      colour=colour,
+      lineend="round"
+    )+
+    
+    geom_point(
+      shape=16,
+      size=3.1,
+      colour=colour
+    )+
+    
+    scale_x_continuous(
+      limits=c(xmin,xmax),
+      breaks=pretty(c(xmin,xmax),n=5),
+      expand=expansion(mult=c(0,0))
+    )+
+    
+    labs(
+      x=xlab,
+      y=NULL
+    )+
+    
+    coord_cartesian(clip="off")+
+    
+    theme_pub()
+  
+  # ==========================================================================
+  # CLEAN VERSION
+  # Add panel letter AFTER plot construction
+  # ==========================================================================
+  
+  if(!show_values){
+    
+    panel_core <- ggdraw(p)
+    
+    panel_final <- panel_core +
+      draw_label(
+        panel_letter,
+        x=0.006,
+        y=0.985,
+        hjust=0,
+        vjust=1,
+        fontface="bold",
+        fontfamily="sans",
+        size=15
+      )
+    
+    return(panel_final)
+  }
+  
+  # ==========================================================================
+  # VALUES COLUMN
+  # ==========================================================================
+  
+  value_plot <- ggplot(d,aes(x=1,y=label))+
+    
+    geom_text(
+      aes(label=value_text),
+      hjust=0,
+      size=3.05,
+      family="sans",
+      colour="black"
+    )+
+    
+    annotate(
+      "text",
+      x=1,
+      y=Inf,
+      label=if(type=="OR")
+        "OR (95% CI)"
+      else
+        "\u03b2 (95% CI)",
+      hjust=0,
+      vjust=1.35,
+      fontface="bold",
+      family="sans",
+      size=3.0
+    )+
+    
+    scale_x_continuous(
+      limits=c(1,2.35),
+      expand=c(0,0)
+    )+
+    
+    scale_y_discrete(
+      limits=levels(d$label)
+    )+
+    
+    coord_cartesian(clip="off")+
+    
+    theme_void(base_family="sans")+
+    
+    theme(
+      plot.margin=margin(27,2,19,8)
+    )
+  
+  # --------------------------------------------------------------------------
+  # Combine forest + numerical column FIRST
+  # --------------------------------------------------------------------------
+  
+  panel_core <- plot_grid(
+    p,
+    value_plot,
+    nrow=1,
+    rel_widths=c(0.75,0.25),
+    align="h",
+    axis="tb"
+  )
+  
+  # --------------------------------------------------------------------------
+  # THEN add a/b/c/d relative to the WHOLE panel
+  # --------------------------------------------------------------------------
+  
+  panel_final <- ggdraw(panel_core) +
+    draw_label(
+      panel_letter,
+      x=0.006,
+      y=0.985,
+      hjust=0,
+      vjust=1,
+      fontface="bold",
+      fontfamily="sans",
+      size=15
+    )
+  
+  panel_final
+}
+# ==============================================================================
+# 10. FOUR PANELS
+#     No subtitles; lowercase a–d only
+# ==============================================================================
+
+pA_clean <- make_section(
+  A,"a","OR",col_A,
+  "Odds ratio",
+  FALSE
+)
+
+pB_clean <- make_section(
+  B,"b","Beta",col_B,
+  "\u03b2 (SD units)",
+  FALSE
+)
+
+pC_clean <- make_section(
+  D,"c","OR",col_C,
+  "Odds ratio per additional hour",
+  FALSE
+)
+
+pD_clean <- make_section(
+  C,"d","Beta",col_D,
+  "\u03b2 per additional hour",
+  FALSE
+)
+
+pA_values <- make_section(
+  A,"a","OR",col_A,
+  "Odds ratio",
+  TRUE
+)
+
+pB_values <- make_section(
+  B,"b","Beta",col_B,
+  "\u03b2 (SD units)",
+  TRUE
+)
+
+pC_values <- make_section(
+  D,"c","OR",col_C,
+  "Odds ratio per additional hour",
+  TRUE
+)
+
+pD_values <- make_section(
+  C,"d","Beta",col_D,
+  "\u03b2 per additional hour",
+  TRUE
+)
+
+# ==============================================================================
+# 11. CLEAN VERSION — VERTICAL 4 × 1
+# ==============================================================================
+
+fig_clean_core <- plot_grid(
+  pA_clean,
+  pB_clean,
+  pC_clean,
+  pD_clean,
+  ncol=1,
+  align="v",
+  axis="lr",
+  rel_heights=c(1,1,1,1)
+)
+
+fig_clean <- ggdraw(fig_clean_core)+
+  draw_label(
+    "* Secondary exploratory exposure",
+    x=0.005,
+    y=0.002,
+    hjust=0,
+    vjust=0,
+    fontfamily="sans",
+    size=7.5
+  )
+
+# ==============================================================================
+# 12. VALUES VERSION — VERTICAL 4 × 1
+# ==============================================================================
+
+fig_values_core <- plot_grid(
+  pA_values,
+  pB_values,
+  pC_values,
+  pD_values,
+  ncol=1,
+  align="v",
+  axis="lr",
+  rel_heights=c(1,1,1,1)
+)
+
+fig_values <- ggdraw(fig_values_core)+
+  draw_label(
+    "* Secondary exploratory exposure",
+    x=0.005,
+    y=0.002,
+    hjust=0,
+    vjust=0,
+    fontfamily="sans",
+    size=7.5
+  )
+
+# ==============================================================================
+# 13. PREVIEW
+# ==============================================================================
+
+print(fig_clean)
+print(fig_values)
+
+# ==============================================================================
+# 14. EXPORT
+# ==============================================================================
+
+save_triplet <- function(plot,prefix,width,height){
+  
+  ggsave(
+    paste0(prefix,".png"),
+    plot=plot,
+    width=width,
+    height=height,
+    units="in",
+    dpi=600,
+    bg="white"
+  )
+  
+  ggsave(
+    paste0(prefix,".tiff"),
+    plot=plot,
+    width=width,
+    height=height,
+    units="in",
+    dpi=600,
+    compression="lzw",
+    bg="white"
+  )
+  
+  ggsave(
+    paste0(prefix,".pdf"),
+    plot=plot,
+    width=width,
+    height=height,
+    units="in",
+    device=grDevices::cairo_pdf,
+    bg="white"
+  )
+}
+
+save_triplet(
+  fig_clean,
+  file.path(out_dir,"Figure4_abcd_vertical_clean"),
+  width=7.4,
+  height=8.3
+)
+
+save_triplet(
+  fig_values,
+  file.path(out_dir,"Figure4_abcd_vertical_values"),
+  width=9.2,
+  height=8.3
+)
+
+# ==============================================================================
+# 15. FINAL QC
+# ==============================================================================
+
+expected_abcd <- file.path(
+  out_dir,
+  c(
+    "Figure4_abcd_vertical_clean.png",
+    "Figure4_abcd_vertical_clean.tiff",
+    "Figure4_abcd_vertical_clean.pdf",
+    "Figure4_abcd_vertical_values.png",
+    "Figure4_abcd_vertical_values.tiff",
+    "Figure4_abcd_vertical_values.pdf"
+  )
+)
+
+missing_output <- expected_abcd[!file.exists(expected_abcd)]
+
+if(length(missing_output)>0){
+  stop(
+    "Missing Figure 4 output:\n",
+    paste(missing_output,collapse="\n")
+  )
+}
+
+cat("\n============================================================\n")
+cat("FIGURE 4 VERTICAL a–d FINAL COMPLETE\n")
+cat("Layout: 4 × 1 vertical\n")
+cat("Panel subtitles removed\n")
+cat("Lowercase panel labels a–d retained at upper left\n")
+cat("Four colors represent analysis panels only\n")
+cat("OR and beta scales remain separate\n")
+cat("Statistical estimates unchanged\n")
+cat("============================================================\n")
+
+for(f in expected_abcd)
+  cat("FOUND:",f,"\n")
+
+################################################################################
+# Supplementary Figure S2
+#
+# Combined restricted cubic spline analyses
+#
+# Panel order:
+# a Sleep onset
+# b Sleep midpoint
+# c Wake time
+#
+# Source:
+# Step16: Sleep onset RCS
+# Step15: Sleep midpoint RCS
+# Step17: Wake time RCS
+#
+# Output:
+# TIFF 600 dpi LZW
+# PDF
+# PNG
+################################################################################
+
+
+rm(list=ls())
+
+
+library(magick)
+library(cowplot)
+library(ggplot2)
+library(grid)
+
+
+# ==============================================================================
+# 1. PATHS
+# ==============================================================================
+
+
+onset_file <- 
+  "D:/code/Step16_sleep_onset_RCS/figures/Step16_RCS_Model4_onset_0_24h_wide.tiff"
+
+
+midpoint_file <- 
+  "D:/code/Step15_midpoint_RCS/figures/Step15_RCS_Model4_midpoint_0_24h_wide.tiff"
+
+
+wake_file <- 
+  "D:/code/Step17_sleep_wake_RCS/figures/Step17_RCS_Model4_wake_0_24h_wide.tiff"
+
+
+
+out_dir <- 
+  "D:/code/Supplementary_Figure_S2_RCS_combined"
+
+
+
+dir.create(
+  out_dir,
+  recursive=TRUE,
+  showWarnings=FALSE
+)
+
+
+
+# ==============================================================================
+# 2. CHECK INPUT
+# ==============================================================================
+
+
+input_files <- c(
+  onset_file,
+  midpoint_file,
+  wake_file
+)
+
+
+missing_files <- input_files[
+  !file.exists(input_files)
+]
+
+
+if(length(missing_files)>0){
+  
+  stop(
+    "Missing file(s):\n",
+    paste(
+      missing_files,
+      collapse="\n"
+    )
+  )
+  
+}
+
+
+cat("\nAll RCS TIFF files found.\n")
+
+
+
+# ==============================================================================
+# 3. READ TIFF
+# ==============================================================================
+
+
+img_onset <- image_read(onset_file)
+
+img_midpoint <- image_read(midpoint_file)
+
+img_wake <- image_read(wake_file)
+
+
+
+# ==============================================================================
+# 4. IMAGE OBJECT
+# ==============================================================================
+
+
+make_image_plot <- function(img){
+  
+  ggdraw()+
+    draw_image(
+      img,
+      x=0,
+      y=0,
+      width=1,
+      height=1
+    )+
+    theme_void()
+  
+}
+
+
+
+p_onset <- make_image_plot(img_onset)
+
+p_midpoint <- make_image_plot(img_midpoint)
+
+p_wake <- make_image_plot(img_wake)
+
+
+
+# ==============================================================================
+# 5. PANEL LABELS
+# ==============================================================================
+
+
+p_onset <- ggdraw(p_onset)+
+  draw_label(
+    "a",
+    x=0.025,
+    y=0.975,
+    hjust=0,
+    vjust=1,
+    fontface="bold",
+    size=14
+  )
+
+
+
+p_midpoint <- ggdraw(p_midpoint)+
+  draw_label(
+    "b",
+    x=0.025,
+    y=0.975,
+    hjust=0,
+    vjust=1,
+    fontface="bold",
+    size=14
+  )
+
+
+
+p_wake <- ggdraw(p_wake)+
+  draw_label(
+    "c",
+    x=0.025,
+    y=0.975,
+    hjust=0,
+    vjust=1,
+    fontface="bold",
+    size=14
+  )
+
+
+
+# ==============================================================================
+# 6. COMBINE
+# ==============================================================================
+
+
+supp_fig2 <- plot_grid(
+  p_onset,
+  p_midpoint,
+  p_wake,
+  nrow=1,
+  align="hv",
+  axis="tblr",
+  rel_widths=c(1,1,1)
+)
+
+
+
+print(supp_fig2)
+
+
+
+# ==============================================================================
+# 7. EXPORT TIFF
+# ==============================================================================
+
+
+ggsave(
+  filename=file.path(
+    out_dir,
+    "Supplementary_Figure_S2_RCS_sleep_timing.tiff"
+  ),
+  plot=supp_fig2,
+  width=10.5,
+  height=3.4,
+  units="in",
+  dpi=600,
+  compression="lzw",
+  bg="white"
+)
+
+
+
+# ==============================================================================
+# 8. EXPORT PDF
+# ==============================================================================
+
+
+ggsave(
+  filename=file.path(
+    out_dir,
+    "Supplementary_Figure_S2_RCS_sleep_timing.pdf"
+  ),
+  plot=supp_fig2,
+  width=10.5,
+  height=3.4,
+  units="in",
+  device=grDevices::cairo_pdf,
+  bg="white"
+)
+
+
+
+# ==============================================================================
+# 9. EXPORT PNG
+# ==============================================================================
+
+
+ggsave(
+  filename=file.path(
+    out_dir,
+    "Supplementary_Figure_S2_RCS_sleep_timing.png"
+  ),
+  plot=supp_fig2,
+  width=10.5,
+  height=3.4,
+  units="in",
+  dpi=300,
+  bg="white"
+)
+
+
+
+# ==============================================================================
+# 10. QC TABLE
+# ==============================================================================
+
+
+qc <- data.frame(
+  
+  Panel=c(
+    "a",
+    "b",
+    "c"
+  ),
+  
+  Sleep_dimension=c(
+    "Sleep onset",
+    "Sleep midpoint",
+    "Wake time"
+  ),
+  
+  Input_file=c(
+    onset_file,
+    midpoint_file,
+    wake_file
+  )
+  
+)
+
+
+
+write.csv(
+  qc,
+  file.path(
+    out_dir,
+    "Supplementary_Figure_S2_RCS_QC.csv"
+  ),
+  row.names=FALSE
+)
+
+
+
+cat(
+  "\n====================================================\n",
+  "Supplementary Figure S2 completed\n",
+  "Panel a: Sleep onset\n",
+  "Panel b: Sleep midpoint\n",
+  "Panel c: Wake time\n",
+  "Output:",
+  out_dir,
+  "\n====================================================\n"
+)
+
+################################################################################
+# SUPPLEMENTARY FIGURE S3 FINAL
+# RCS sensitivity analyses of sleep rhythm disruption index
+#
+# Panel order:
+#   a  PHQ-9 >=15
+#   b  Modified PHQ-9 excluding the sleep-related item
+#   c  Complete-case analysis
+#
+# READ-ONLY FIGURE ASSEMBLY
+# No statistical model or source figure is modified
+################################################################################
+
+rm(list=ls())
+
+library(magick)
+library(cowplot)
+library(ggplot2)
+
+# ==============================================================================
+# 1. PATHS
+# ==============================================================================
+
+root_dir <- "D:/code"
+
+fig_a <- file.path(root_dir,"Step20_RCS_MI_PHQ_Sensitivity",
+                   "PHQ_9_15","RCS_curve.tiff")
+
+fig_b <- file.path(root_dir,"Step20_RCS_MI_PHQ_Sensitivity",
+                   "Modified_PHQ_9_without_sleep_item","RCS_curve.tiff")
+
+fig_c <- file.path(root_dir,"Step20_CompleteCase_RCS_Sensitivity_FINAL",
+                   "figures","Step20_CC_RCS_sensitivity_FINAL.tiff")
+
+out_dir <- file.path(root_dir,"Supplementary_Figure_S3_RCS_sensitivity")
+dir.create(out_dir,recursive=TRUE,showWarnings=FALSE)
+
+# ==============================================================================
+# 2. INPUT QC
+# ==============================================================================
+
+input_files <- c(fig_a,fig_b,fig_c)
+panel_names <- c("PHQ-9 >=15",
+                 "Modified PHQ-9 excluding the sleep-related item",
+                 "Complete-case analysis")
+
+if(any(!file.exists(input_files))){
+  stop("Missing figure file(s):\n",
+       paste(input_files[!file.exists(input_files)],collapse="\n"))
+}
+
+cat("\nAll Supplementary Figure S3 source files found.\n")
+
+# ==============================================================================
+# 3. READ + CONVERT TO PLOT OBJECTS
+# ==============================================================================
+
+make_panel <- function(file,label){
+  img <- image_read(file)
+  ggdraw()+
+    draw_image(img,x=0,y=0,width=1,height=1)+
+    draw_label(label,x=0.025,y=0.975,hjust=0,vjust=1,
+               fontface="bold",size=14)
+}
+
+p_a <- make_panel(fig_a,"a")
+p_b <- make_panel(fig_b,"b")
+p_c <- make_panel(fig_c,"c")
+
+# ==============================================================================
+# 4. COMBINE — ORIGINAL FIGURE APPEARANCE RETAINED
+# ==============================================================================
+
+supp_fig_s3 <- plot_grid(
+  p_a,p_b,p_c,
+  nrow=1,
+  align="hv",
+  axis="tblr",
+  rel_widths=c(1,1,1)
+)
+
+print(supp_fig_s3)
+
+# ==============================================================================
+# 5. EXPORT
+# ==============================================================================
+
+tiff_file <- file.path(out_dir,"Supplementary_Figure_S3_RCS_sensitivity.tiff")
+pdf_file  <- file.path(out_dir,"Supplementary_Figure_S3_RCS_sensitivity.pdf")
+png_file  <- file.path(out_dir,"Supplementary_Figure_S3_RCS_sensitivity.png")
+
+ggsave(tiff_file,supp_fig_s3,width=10.5,height=3.4,units="in",
+       dpi=600,compression="lzw",bg="white")
+
+ggsave(pdf_file,supp_fig_s3,width=10.5,height=3.4,units="in",
+       device=grDevices::cairo_pdf,bg="white")
+
+ggsave(png_file,supp_fig_s3,width=10.5,height=3.4,units="in",
+       dpi=300,bg="white")
+
+# ==============================================================================
+# 6. QC
+# ==============================================================================
+
+qc <- data.frame(
+  Panel=c("a","b","c"),
+  Analysis=panel_names,
+  Input_file=input_files,
+  stringsAsFactors=FALSE
+)
+
+write.csv(
+  qc,
+  file.path(out_dir,"Supplementary_Figure_S3_QC.csv"),
+  row.names=FALSE
+)
+
+expected <- c(tiff_file,pdf_file,png_file,
+              file.path(out_dir,"Supplementary_Figure_S3_QC.csv"))
+
+if(any(!file.exists(expected)))
+  stop("One or more Supplementary Figure S3 outputs are missing.")
+
+cat("\n============================================================\n")
+cat("SUPPLEMENTARY FIGURE S3 FINAL: PASS\n")
+cat("Panel a: PHQ-9 >=15\n")
+cat("Panel b: Modified PHQ-9 excluding the sleep-related item\n")
+cat("Panel c: Complete-case analysis\n")
+cat("Source figures unchanged: PASS\n")
+cat("TIFF 600 dpi LZW: PASS\n")
+cat("PDF: PASS\n")
+cat("PNG: PASS\n")
+cat("Output:",out_dir,"\n")
+cat("============================================================\n")
+
+################################################################################
+# SUPPLEMENTARY TABLE S3 FINAL
+# Sensitivity analyses of sleep rhythm disruption and depressive symptoms
+#
+# READ-ONLY integration of:
+#   1. Alternative PHQ-9 outcome analyses
+#   2. Complete-case analysis
+#   3. Alternative P10-P90 score analysis
+#
+# Outputs:
+#   Supplementary_Table_S2_Sensitivity_Analyses.csv
+#   Supplementary_Table_S2_Sensitivity_Analyses.rds
+#   Supplementary_Table_S2_title_and_note.txt
+################################################################################
+
+rm(list=ls())
+
+library(dplyr)
+library(readr)
+
+# ==============================================================================
+# 1. PATHS
+# ==============================================================================
+
+root_dir <- "D:/code"
+file_phq <- file.path(root_dir,"Step19_MI_PHQ_sensitivity","Step19_MI_PHQ_sensitivity_pooled_results.csv")
+file_cc <- file.path(root_dir,"Step19_CompleteCase_Sensitivity","Supplementary_complete_case_OR_table.csv")
+file_p10 <- file.path(root_dir,"Step19_P10P90_Sensitivity","Supplementary_P10P90_sensitivity_publication_table.csv")
+
+out_dir <- file.path(root_dir,"Supplementary_Tables")
+dir.create(out_dir,recursive=TRUE,showWarnings=FALSE)
+
+csv_file <- file.path(out_dir,"Supplementary_Table_S2_Sensitivity_Analyses.csv")
+rds_file <- file.path(out_dir,"Supplementary_Table_S2_Sensitivity_Analyses.rds")
+note_file <- file.path(out_dir,"Supplementary_Table_S2_title_and_note.txt")
+
+for(f in c(file_phq,file_cc,file_p10)) if(!file.exists(f)) stop("Cannot find: ",f)
+
+# ==============================================================================
+# 2. LOAD + QC
+# ==============================================================================
+
+phq <- read.csv(file_phq,stringsAsFactors=FALSE,check.names=FALSE)
+cc  <- read.csv(file_cc,stringsAsFactors=FALSE,check.names=FALSE)
+p10 <- read.csv(file_p10,stringsAsFactors=FALSE,check.names=FALSE)
+
+check_cols <- function(x,need,label){
+  miss <- setdiff(need,names(x))
+  if(length(miss)>0) stop(label," missing columns: ",paste(miss,collapse=", "))
+}
+
+check_cols(phq,c("Outcome","OR","CI_lower","CI_upper","p_value"),"PHQ file")
+check_cols(cc,c("Model","OR_95CI","P"),"Complete-case file")
+check_cols(p10,c("Analysis","Category","OR_95CI","P"),"P10-P90 file")
+
+fmt_p <- function(x){
+  if(is.na(x)||x=="") return("—")
+  if(is.character(x)&&grepl("^<",x)) return(x)
+  z <- suppressWarnings(as.numeric(x))
+  if(is.na(z)) return(as.character(x))
+  if(z<0.001) "<0.001" else sprintf("%.3f",z)
+}
+
+fmt_ci <- function(or,lo,hi)
+  sprintf("%.2f (%.2f–%.2f)",or,lo,hi)
+
+clean_ci <- function(x){
+  x <- trimws(as.character(x))
+  x <- gsub("\\s*-\\s*","–",x)
+  x
+}
+
+# ==============================================================================
+# 3. ALTERNATIVE DEPRESSIVE-SYMPTOM DEFINITIONS
+# ==============================================================================
+
+phq_tab <- phq %>%
+  mutate(
+    Sensitivity_analysis="Alternative depressive symptom definitions",
+    Definition=case_when(
+      grepl("15",Outcome,fixed=TRUE) ~ "PHQ-9 ≥15",
+      grepl("Modified",Outcome,ignore.case=TRUE) |
+        grepl("sleep",Outcome,ignore.case=TRUE) ~
+        "Modified PHQ-9 excluding the sleep-related item",
+      TRUE ~ Outcome
+    ),
+    Comparison="Per 1-SD higher sleep rhythm disruption index",
+    OR_95CI=mapply(fmt_ci,OR,CI_lower,CI_upper),
+    P_value=vapply(p_value,fmt_p,character(1))
+  ) %>%
+  select(Sensitivity_analysis,Definition,Comparison,OR_95CI,P_value)
+
+if(nrow(phq_tab)!=2) stop("Expected exactly 2 PHQ sensitivity rows.")
+
+# ==============================================================================
+# 4. COMPLETE-CASE ANALYSIS — MODEL 4 ONLY
+# ==============================================================================
+
+cc_tab <- cc %>%
+  filter(Model=="Model4_full") %>%
+  transmute(
+    Sensitivity_analysis="Complete-case analysis",
+    Definition="Complete-case sample",
+    Comparison="Per 1-SD higher sleep rhythm disruption index",
+    OR_95CI=clean_ci(OR_95CI),
+    P_value=vapply(P,fmt_p,character(1))
+  )
+
+if(nrow(cc_tab)!=1) stop("Expected exactly 1 complete-case Model 4 row.")
+
+# ==============================================================================
+# 5. ALTERNATIVE P10-P90 SCORE — MODEL 4
+# ==============================================================================
+
+p10_cont <- p10 %>%
+  filter(
+    Analysis=="Per 1-point higher P10-P90 score",
+    Category=="Model4_full"
+  ) %>%
+  transmute(
+    Sensitivity_analysis="Alternative P10–P90 score",
+    Definition="Continuous score",
+    Comparison="Per 1-point higher score",
+    OR_95CI=clean_ci(OR_95CI),
+    P_value=vapply(P,fmt_p,character(1))
+  )
+
+p10_cat <- p10 %>%
+  filter(Analysis=="P10-P90 score categories") %>%
+  transmute(
+    Sensitivity_analysis="Alternative P10–P90 score",
+    Definition=case_when(
+      grepl("1-2",Category,fixed=TRUE) ~ "Score category: 1–2",
+      grepl(">=3",Category,fixed=TRUE) ~ "Score category: ≥3",
+      TRUE ~ Category
+    ),
+    Comparison="vs 0",
+    OR_95CI=clean_ci(OR_95CI),
+    P_value=vapply(P,fmt_p,character(1))
+  )
+
+p10_ref <- data.frame(
+  Sensitivity_analysis="Alternative P10–P90 score",
+  Definition="Score category: 0",
+  Comparison="Reference",
+  OR_95CI="1.00 (reference)",
+  P_value="—",
+  stringsAsFactors=FALSE
+)
+
+if(nrow(p10_cont)!=1||nrow(p10_cat)!=2)
+  stop("Unexpected P10-P90 result structure.")
+
+# ==============================================================================
+# 6. FINAL TABLE — NO ARTIFICIAL BLANK CELLS
+# ==============================================================================
+
+table_s2 <- bind_rows(
+  phq_tab,
+  cc_tab,
+  p10_cont,
+  p10_ref,
+  p10_cat
+) %>%
+  mutate(
+    order_group=match(
+      Sensitivity_analysis,
+      c(
+        "Alternative depressive symptom definitions",
+        "Complete-case analysis",
+        "Alternative P10–P90 score"
+      )
+    ),
+    order_row=match(
+      Definition,
+      c(
+        "PHQ-9 ≥15",
+        "Modified PHQ-9 excluding the sleep-related item",
+        "Complete-case sample",
+        "Continuous score",
+        "Score category: 0",
+        "Score category: 1–2",
+        "Score category: ≥3"
+      )
+    )
+  ) %>%
+  arrange(order_group,order_row) %>%
+  select(
+    `Sensitivity analysis`=Sensitivity_analysis,
+    `Definition / sample`=Definition,
+    Comparison,
+    `OR (95% CI)`=OR_95CI,
+    `P value`=P_value
+  )
+
+# ==============================================================================
+# 7. FINAL QC
+# ==============================================================================
+
+if(nrow(table_s2)!=7) stop("Expected 7 rows; found ",nrow(table_s2))
+if(anyNA(table_s2)) stop("Unexpected NA detected in final table.")
+if(any(table_s2$`Sensitivity analysis`=="")) stop("Blank sensitivity-analysis labels detected.")
+if(any(table_s2$`OR (95% CI)`=="")) stop("Blank OR/CI detected.")
+
+expected_sections <- c(
+  "Alternative depressive symptom definitions",
+  "Complete-case analysis",
+  "Alternative P10–P90 score"
+)
+
+if(!all(expected_sections%in%unique(table_s2$`Sensitivity analysis`)))
+  stop("One or more sensitivity-analysis sections are missing.")
+
+print(table_s2,row.names=FALSE)
+
+# ==============================================================================
+# 8. EXPORT CSV + RDS
+# ==============================================================================
+
+write.csv(
+  table_s2,csv_file,
+  row.names=FALSE,
+  na="",
+  fileEncoding="UTF-8"
+)
+
+saveRDS(
+  table_s2,
+  rds_file,
+  compress=TRUE
+)
+
+# Read-back QC
+csv_check <- read.csv(csv_file,stringsAsFactors=FALSE,check.names=FALSE)
+rds_check <- readRDS(rds_file)
+
+if(nrow(csv_check)!=7||nrow(rds_check)!=7) stop("Export read-back row-count QC failed.")
+if(anyNA(rds_check)) stop("RDS read-back contains unexpected NA.")
+if(!identical(names(table_s2),names(rds_check))) stop("RDS column-name QC failed.")
+
+# ==============================================================================
+# 9. TITLE + FOOTNOTE
+# ==============================================================================
+
+writeLines(
+  c(
+    "Supplementary Table S3. Sensitivity analyses of the association between sleep rhythm disruption and clinically relevant depressive symptoms",
+    "",
+    "Estimates are odds ratios (ORs) with 95% confidence intervals (CIs) from the fully adjusted model (Model 4). Unless otherwise specified, estimates are reported per 1-SD higher standardized sleep rhythm disruption index. Alternative outcome analyses used PHQ-9 ≥15 and a modified PHQ-9 excluding the sleep-related item. The P10–P90 score assigned one point for each of the six sleep timing measures outside its 10th–90th percentile reference range. All analyses accounted for the NHANES complex survey design. Multiple-imputation analyses were pooled across 20 imputed datasets using Rubin’s rules; the complete-case analysis included 9,946 participants.",
+    "",
+    "Abbreviations: CI, confidence interval; NHANES, National Health and Nutrition Examination Survey; OR, odds ratio; PHQ-9, Patient Health Questionnaire-9; SD, standard deviation."
+  ),
+  note_file,
+  useBytes=TRUE
+)
+
+# ==============================================================================
+# 10. FINAL
+# ==============================================================================
+
+cat("\n============================================================\n")
+cat("SUPPLEMENTARY TABLE S3 FINAL: PASS\n")
+cat("Rows:",nrow(table_s2),"\n")
+cat("Missing cells:",sum(is.na(table_s2)),"\n")
+cat("CSV:",csv_file,"\n")
+cat("RDS:",rds_file,"\n")
+cat("Title/note:",note_file,"\n")
+cat("CSV/RDS read-back QC: PASS\n")
+cat("============================================================\n")
