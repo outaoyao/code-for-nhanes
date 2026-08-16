@@ -1,0 +1,1714 @@
+################################################################################
+# Script Name: 1. Demographic Data Integration (NHANES 2017-2023)
+# Purpose:
+#   Download, clean, re-weight, and merge NHANES demographic cycles.
+#   Harmonize age, PIR, marital status, education, race/ethnicity and pregnancy.
+#
+# Critical fix:
+#   DMDMARTZ is label/character-type after nhanesA import.
+#   Do NOT use mutate(across(everything(), as.numeric)),
+#   otherwise marital status labels will be corrupted.
+#
+# Manuscript-consistent version:
+#   - NHANES 2017-March 2020 + 2021-2023
+#   - MEC weights recalibrated to 5.2-year combined cycle
+#   - Age categories: 20-39, 40-59, >=60
+#   - PIR categories: <1.30, 1.30-3.50, >=3.50
+#   - Marital status:
+#       Married/Living with Partner
+#       Widowed/Divorced/Separated
+#       Never married
+################################################################################
+
+# 1. Load Required Libraries ---------------------------------------------------
+
+library(nhanesA)
+library(tidyverse)
+
+# 2. Environment Setup ---------------------------------------------------------
+
+source_dir <- "D:/code"
+export_dir <- "D:/code"
+
+if (!dir.exists(export_dir)) {
+  dir.create(export_dir, recursive = TRUE)
+}
+
+qc_dir <- file.path(export_dir, "qc_outputs")
+if (!dir.exists(qc_dir)) {
+  dir.create(qc_dir, recursive = TRUE)
+}
+
+# 3. Helper Functions ----------------------------------------------------------
+
+clean_valid <- function(x, valid_values) {
+  x <- as.numeric(x)
+  ifelse(x %in% valid_values, x, NA_real_)
+}
+
+make_age_cat <- function(age) {
+  case_when(
+    age >= 20 & age <= 39 ~ "20-39",
+    age >= 40 & age <= 59 ~ "40-59",
+    age >= 60             ~ "≥60",
+    TRUE                  ~ NA_character_
+  )
+}
+
+make_pir_cat <- function(pir) {
+  case_when(
+    is.na(pir)               ~ NA_character_,
+    pir < 1.30               ~ "<1.30",
+    pir >= 1.30 & pir < 3.50 ~ "1.30-3.50",
+    pir >= 3.50              ~ "≥3.50",
+    TRUE                     ~ NA_character_
+  )
+}
+
+make_marital_cat <- function(x) {
+  x <- as.character(x)
+  
+  case_when(
+    x %in% c(
+      "Married/Living with Partner",
+      "Married/Living with partner"
+    ) ~ "Married/Living with Partner",
+    
+    x == "Widowed/Divorced/Separated" ~ "Widowed/Divorced/Separated",
+    
+    x == "Never married" ~ "Never married",
+    
+    x %in% c(
+      "Refused",
+      "Don't Know",
+      "Don't know"
+    ) ~ NA_character_,
+    
+    is.na(x) ~ NA_character_,
+    
+    TRUE ~ NA_character_
+  )
+}
+
+make_education_cat <- function(x) {
+  case_when(
+    x == 1 ~ "Less than 9th grade",
+    x == 2 ~ "9-11th grade",
+    x == 3 ~ "High school graduate/GED",
+    x == 4 ~ "Some college or AA degree",
+    x == 5 ~ "College graduate or above",
+    TRUE   ~ NA_character_
+  )
+}
+
+make_race_cat <- function(x) {
+  case_when(
+    x == 1 ~ "Mexican American",
+    x == 2 ~ "Other Hispanic",
+    x == 3 ~ "Non-Hispanic White",
+    x == 4 ~ "Non-Hispanic Black",
+    x == 5 ~ "Other Race",
+    TRUE   ~ NA_character_
+  )
+}
+
+make_sex_cat <- function(x) {
+  case_when(
+    x == 1 ~ "Male",
+    x == 2 ~ "Female",
+    TRUE   ~ NA_character_
+  )
+}
+
+# 4. Process Cycle 1: 2017-March 2020 -----------------------------------------
+
+cat("Processing NHANES 2017-March 2020 cycle...\n")
+
+demo_1720_raw <- nhanes("P_DEMO")
+
+cat("\nRaw 2017-2020 DMDMARTZ distribution:\n")
+print(table(demo_1720_raw$DMDMARTZ, useNA = "ifany"))
+
+demo_1720 <- demo_1720_raw %>%
+  select(
+    SEQN, SDDSRVYR, RIDSTATR, RIAGENDR, RIDAGEYR, RIDRETH1,
+    DMDEDUC2, DMDMARTZ, RIDEXPRG, WTINTPRP, WTMECPRP,
+    SDMVPSU, SDMVSTRA, INDFMPIR
+  ) %>%
+  mutate(
+    across(
+      c(
+        SEQN, SDDSRVYR, RIDSTATR, RIAGENDR, RIDAGEYR, RIDRETH1,
+        DMDEDUC2, RIDEXPRG, WTINTPRP, WTMECPRP,
+        SDMVPSU, SDMVSTRA, INDFMPIR
+      ),
+      as.numeric
+    )
+  ) %>%
+  mutate(
+    CYCLE = "2017-2020",
+    
+    RIAGENDR = clean_valid(RIAGENDR, 1:2),
+    RIDRETH1 = clean_valid(RIDRETH1, 1:5),
+    DMDEDUC2 = clean_valid(DMDEDUC2, 1:5),
+    
+    # Pregnancy status:
+    # 1 Yes; 2 No; 3 Cannot ascertain
+    RIDEXPRG = clean_valid(RIDEXPRG, 1:3),
+    
+    mec_adj = (3.2 / 5.2) * WTMECPRP,
+    int_adj = (3.2 / 5.2) * WTINTPRP
+  )
+
+# 5. Process Cycle 2: 2021-2023 ------------------------------------------------
+
+cat("\nProcessing NHANES 2021-2023 cycle...\n")
+
+demo_2123_raw <- nhanes("DEMO_L")
+
+cat("\nRaw 2021-2023 DMDMARTZ distribution:\n")
+print(table(demo_2123_raw$DMDMARTZ, useNA = "ifany"))
+
+demo_2123 <- demo_2123_raw %>%
+  select(
+    SEQN, SDDSRVYR, RIDSTATR, RIAGENDR, RIDAGEYR, RIDRETH1,
+    DMDEDUC2, DMDMARTZ, RIDEXPRG, WTINT2YR, WTMEC2YR,
+    SDMVPSU, SDMVSTRA, INDFMPIR
+  ) %>%
+  mutate(
+    across(
+      c(
+        SEQN, SDDSRVYR, RIDSTATR, RIAGENDR, RIDAGEYR, RIDRETH1,
+        DMDEDUC2, RIDEXPRG, WTINT2YR, WTMEC2YR,
+        SDMVPSU, SDMVSTRA, INDFMPIR
+      ),
+      as.numeric
+    )
+  ) %>%
+  mutate(
+    CYCLE = "2021-2023",
+    
+    RIAGENDR = clean_valid(RIAGENDR, 1:2),
+    RIDRETH1 = clean_valid(RIDRETH1, 1:5),
+    DMDEDUC2 = clean_valid(DMDEDUC2, 1:5),
+    RIDEXPRG = clean_valid(RIDEXPRG, 1:3),
+    
+    mec_adj = (2.0 / 5.2) * WTMEC2YR,
+    int_adj = (2.0 / 5.2) * WTINT2YR
+  )
+
+# 6. Merge, Harmonize, and Categorize -----------------------------------------
+
+cat("\nMerging datasets and creating manuscript-consistent variables...\n")
+
+demo_combined <- bind_rows(demo_1720, demo_2123) %>%
+  mutate(
+    sex = factor(
+      make_sex_cat(RIAGENDR),
+      levels = c("Male", "Female")
+    ),
+    
+    race_ethnicity = factor(
+      make_race_cat(RIDRETH1),
+      levels = c(
+        "Mexican American",
+        "Other Hispanic",
+        "Non-Hispanic White",
+        "Non-Hispanic Black",
+        "Other Race"
+      )
+    ),
+    
+    education = factor(
+      make_education_cat(DMDEDUC2),
+      levels = c(
+        "Less than 9th grade",
+        "9-11th grade",
+        "High school graduate/GED",
+        "Some college or AA degree",
+        "College graduate or above"
+      )
+    ),
+    
+    marital_status = factor(
+      make_marital_cat(DMDMARTZ),
+      levels = c(
+        "Married/Living with Partner",
+        "Widowed/Divorced/Separated",
+        "Never married"
+      )
+    ),
+    
+    Age_cat = factor(
+      make_age_cat(RIDAGEYR),
+      levels = c("20-39", "40-59", "≥60")
+    ),
+    
+    PIR_cat = factor(
+      make_pir_cat(INDFMPIR),
+      levels = c("<1.30", "1.30-3.50", "≥3.50")
+    ),
+    
+    Age_cat_num = as.numeric(Age_cat),
+    PIR_cat_num = as.numeric(PIR_cat),
+    
+    pregnancy_yes = ifelse(RIDEXPRG == 1, 1, 0),
+    
+    adult_20plus = ifelse(RIDAGEYR >= 20, 1, 0),
+    
+    positive_mec_weight = ifelse(!is.na(mec_adj) & mec_adj > 0, 1, 0),
+    positive_int_weight = ifelse(!is.na(int_adj) & int_adj > 0, 1, 0)
+  )
+
+# 7. QC ------------------------------------------------------------------------
+
+cat("\n--- Basic Sample QC ---\n")
+cat("Total participants:", nrow(demo_combined), "\n")
+cat("2017-2020 participants:", sum(demo_combined$CYCLE == "2017-2020"), "\n")
+cat("2021-2023 participants:", sum(demo_combined$CYCLE == "2021-2023"), "\n")
+cat("Adults aged >=20:", sum(demo_combined$adult_20plus == 1, na.rm = TRUE), "\n")
+cat("Pregnant participants:", sum(demo_combined$pregnancy_yes == 1, na.rm = TRUE), "\n")
+cat("Participants with positive MEC weight:", sum(demo_combined$positive_mec_weight == 1, na.rm = TRUE), "\n")
+cat("Participants with positive interview weight:", sum(demo_combined$positive_int_weight == 1, na.rm = TRUE), "\n")
+
+cat("\n--- Missingness Audit: Key Demographic Variables ---\n")
+
+missing_audit <- demo_combined %>%
+  summarise(
+    n_total = n(),
+    
+    missing_age = sum(is.na(RIDAGEYR)),
+    missing_age_cat_among_adults = sum(is.na(Age_cat) & RIDAGEYR >= 20, na.rm = TRUE),
+    
+    missing_sex = sum(is.na(sex)),
+    missing_race = sum(is.na(race_ethnicity)),
+    missing_education_all = sum(is.na(education)),
+    missing_education_among_adults = sum(is.na(education) & RIDAGEYR >= 20, na.rm = TRUE),
+    
+    missing_marital_status_all = sum(is.na(marital_status)),
+    missing_marital_status_among_adults = sum(is.na(marital_status) & RIDAGEYR >= 20, na.rm = TRUE),
+    
+    missing_pir_raw_all = sum(is.na(INDFMPIR)),
+    missing_pir_cat_all = sum(is.na(PIR_cat)),
+    missing_pir_cat_among_adults = sum(is.na(PIR_cat) & RIDAGEYR >= 20, na.rm = TRUE),
+    
+    missing_mec_weight = sum(is.na(mec_adj)),
+    zero_or_negative_mec_weight = sum(!is.na(mec_adj) & mec_adj <= 0),
+    
+    missing_int_weight = sum(is.na(int_adj)),
+    zero_or_negative_int_weight = sum(!is.na(int_adj) & int_adj <= 0),
+    
+    missing_psu = sum(is.na(SDMVPSU)),
+    missing_strata = sum(is.na(SDMVSTRA))
+  )
+
+print(missing_audit)
+
+cat("\n--- Age Category Distribution among Adults ---\n")
+age_dist_adults <- demo_combined %>%
+  filter(RIDAGEYR >= 20) %>%
+  count(Age_cat, name = "n")
+
+print(age_dist_adults)
+
+cat("\n--- Marital Status Distribution among Adults ---\n")
+marital_dist_adults <- demo_combined %>%
+  filter(RIDAGEYR >= 20) %>%
+  count(marital_status, name = "n")
+
+print(marital_dist_adults)
+
+cat("\n--- PIR Category Distribution among Adults ---\n")
+pir_dist_adults <- demo_combined %>%
+  filter(RIDAGEYR >= 20) %>%
+  count(PIR_cat, name = "n")
+
+print(pir_dist_adults)
+
+cat("\n--- Education Distribution among Adults ---\n")
+education_dist_adults <- demo_combined %>%
+  filter(RIDAGEYR >= 20) %>%
+  count(education, name = "n")
+
+print(education_dist_adults)
+
+cat("\n--- Raw DMDMARTZ Distribution after Merge ---\n")
+raw_marital_after_merge <- demo_combined %>%
+  count(CYCLE, DMDMARTZ, name = "n")
+
+print(raw_marital_after_merge)
+
+cat("\n--- Weight Summary by Cycle ---\n")
+
+weight_summary <- demo_combined %>%
+  group_by(CYCLE) %>%
+  summarise(
+    N = n(),
+    
+    Mean_MEC_Adj = mean(mec_adj, na.rm = TRUE),
+    Median_MEC_Adj = median(mec_adj, na.rm = TRUE),
+    Min_MEC_Adj = min(mec_adj, na.rm = TRUE),
+    Max_MEC_Adj = max(mec_adj, na.rm = TRUE),
+    
+    Mean_INT_Adj = mean(int_adj, na.rm = TRUE),
+    Median_INT_Adj = median(int_adj, na.rm = TRUE),
+    Min_INT_Adj = min(int_adj, na.rm = TRUE),
+    Max_INT_Adj = max(int_adj, na.rm = TRUE),
+    
+    N_zero_or_negative_MEC = sum(!is.na(mec_adj) & mec_adj <= 0),
+    N_zero_or_negative_INT = sum(!is.na(int_adj) & int_adj <= 0),
+    
+    .groups = "drop"
+  )
+
+print(weight_summary)
+
+cat("\n--- Check for Impossible Values ---\n")
+
+range_qc <- demo_combined %>%
+  summarise(
+    min_age = min(RIDAGEYR, na.rm = TRUE),
+    max_age = max(RIDAGEYR, na.rm = TRUE),
+    
+    min_pir = min(INDFMPIR, na.rm = TRUE),
+    max_pir = max(INDFMPIR, na.rm = TRUE),
+    
+    min_mec_adj = min(mec_adj, na.rm = TRUE),
+    max_mec_adj = max(mec_adj, na.rm = TRUE),
+    
+    min_int_adj = min(int_adj, na.rm = TRUE),
+    max_int_adj = max(int_adj, na.rm = TRUE)
+  )
+
+print(range_qc)
+
+# 8. Save QC Outputs -----------------------------------------------------------
+
+write_csv(missing_audit, file.path(qc_dir, "Step1_demographic_missingness_audit.csv"))
+write_csv(age_dist_adults, file.path(qc_dir, "Step1_age_distribution_adults.csv"))
+write_csv(marital_dist_adults, file.path(qc_dir, "Step1_marital_distribution_adults.csv"))
+write_csv(pir_dist_adults, file.path(qc_dir, "Step1_pir_distribution_adults.csv"))
+write_csv(education_dist_adults, file.path(qc_dir, "Step1_education_distribution_adults.csv"))
+write_csv(raw_marital_after_merge, file.path(qc_dir, "Step1_raw_DMDMARTZ_after_merge.csv"))
+write_csv(weight_summary, file.path(qc_dir, "Step1_weight_summary_by_cycle.csv"))
+write_csv(range_qc, file.path(qc_dir, "Step1_range_qc.csv"))
+
+# 9. Export Final Dataset ------------------------------------------------------
+
+export_path <- file.path(export_dir, "1.data.rds")
+saveRDS(demo_combined, export_path)
+
+cat("\nSuccess! Integrated demographics saved to:", export_path, "\n")
+cat("QC files saved to:", qc_dir, "\n")
+
+################################################################################
+# Script Name: 2. PHQ-9 Depression Data Processing (NHANES 2017-2023)
+# Purpose:
+#   Extract, clean, recode PHQ-9 items, and calculate depression outcomes.
+#
+# Manuscript-consistent version:
+#   Main outcome:
+#     - PHQ-9 >= 10
+#
+#   Sensitivity outcomes:
+#     - PHQ-9 >= 15
+#     - Modified PHQ-9 score excluding item 3 / DPQ030 >= 10
+#     - Modified PHQ-9 score excluding item 3 / DPQ030 >= 9
+#     - Exclusion flag for daily suicidal ideation, DPQ090 == 3 after recoding
+#
+# Data Cycles:
+#   - 2017-March 2020: P_DPQ
+#   - 2021-2023: DPQ_L
+#
+# Output:
+#   - D:/code/2.data.rds
+################################################################################
+
+library(nhanesA)
+library(tidyverse)
+
+export_dir <- "D:/code"
+
+if (!dir.exists(export_dir)) {
+  dir.create(export_dir, recursive = TRUE)
+}
+
+qc_dir <- file.path(export_dir, "qc_outputs")
+
+if (!dir.exists(qc_dir)) {
+  dir.create(qc_dir, recursive = TRUE)
+}
+
+recode_phq <- function(x) {
+  x <- as.numeric(x)
+  
+  case_when(
+    x == 1 ~ 0,
+    x == 2 ~ 1,
+    x == 3 ~ 2,
+    x == 4 ~ 3,
+    TRUE   ~ NA_real_
+  )
+}
+
+process_phq_cycle <- function(table_name, cycle_label) {
+  
+  cat("Processing Cycle:", cycle_label, "...\n")
+  
+  raw_data <- nhanes(table_name)
+  
+  required_vars <- c(
+    "SEQN",
+    "DPQ010", "DPQ020", "DPQ030", "DPQ040", "DPQ050",
+    "DPQ060", "DPQ070", "DPQ080", "DPQ090"
+  )
+  
+  missing_vars <- setdiff(required_vars, names(raw_data))
+  
+  if (length(missing_vars) > 0) {
+    stop(
+      "Missing required PHQ variables in ",
+      table_name,
+      ": ",
+      paste(missing_vars, collapse = ", ")
+    )
+  }
+  
+  processed <- raw_data %>%
+    select(all_of(required_vars)) %>%
+    mutate(SEQN = as.numeric(SEQN)) %>%
+    mutate(
+      across(
+        DPQ010:DPQ090,
+        ~ recode_phq(.)
+      )
+    ) %>%
+    mutate(
+      PHQ9_ITEM_MISSING_N = rowSums(
+        is.na(select(., DPQ010:DPQ090))
+      ),
+      
+      PHQ9_SCORE = ifelse(
+        PHQ9_ITEM_MISSING_N == 0,
+        rowSums(select(., DPQ010:DPQ090)),
+        NA_real_
+      ),
+      
+      # Modified PHQ-9 score excluding item 3 / DPQ030.
+      # This sensitivity outcome reduces overlap between sleep-related
+      # exposures and the sleep symptom item in PHQ-9.
+      PHQ9_no_sleep_ITEM_MISSING_N = rowSums(
+        is.na(select(., DPQ010, DPQ020, DPQ040:DPQ090))
+      ),
+      
+      PHQ9_no_sleep_SCORE = ifelse(
+        PHQ9_no_sleep_ITEM_MISSING_N == 0,
+        rowSums(select(., DPQ010, DPQ020, DPQ040:DPQ090)),
+        NA_real_
+      ),
+      
+      # Main outcome
+      PHQ9_depression_above_10 = case_when(
+        PHQ9_SCORE >= 10 ~ 1,
+        PHQ9_SCORE < 10  ~ 0,
+        TRUE             ~ NA_real_
+      ),
+      
+      # Backward-compatible variable name
+      Moderate_depression_above = PHQ9_depression_above_10,
+      
+      # Sensitivity outcome: stricter PHQ-9 threshold
+      PHQ9_depression_above_15 = case_when(
+        PHQ9_SCORE >= 15 ~ 1,
+        PHQ9_SCORE < 15  ~ 0,
+        TRUE             ~ NA_real_
+      ),
+      
+      # Backward-compatible variable name
+      ModSevere_depression_above = PHQ9_depression_above_15,
+      
+      # Sensitivity outcome: modified PHQ-9 excluding item 3, threshold >=10
+      PHQ9_no_sleep_depression_above_10 = case_when(
+        PHQ9_no_sleep_SCORE >= 10 ~ 1,
+        PHQ9_no_sleep_SCORE < 10  ~ 0,
+        TRUE                      ~ NA_real_
+      ),
+      
+      # Sensitivity outcome: modified PHQ-9 excluding item 3, threshold >=9
+      PHQ9_no_sleep_depression_above_9 = case_when(
+        PHQ9_no_sleep_SCORE >= 9 ~ 1,
+        PHQ9_no_sleep_SCORE < 9  ~ 0,
+        TRUE                     ~ NA_real_
+      ),
+      
+      suicidal_ideation_any = case_when(
+        DPQ090 >= 1 ~ 1,
+        DPQ090 == 0 ~ 0,
+        TRUE        ~ NA_real_
+      ),
+      
+      suicidal_ideation_daily = case_when(
+        DPQ090 == 3 ~ 1,
+        DPQ090 < 3  ~ 0,
+        TRUE        ~ NA_real_
+      ),
+      
+      PHQ9_Category_Num = case_when(
+        PHQ9_SCORE >= 20 ~ 5,
+        PHQ9_SCORE >= 15 ~ 4,
+        PHQ9_SCORE >= 10 ~ 3,
+        PHQ9_SCORE >= 5  ~ 2,
+        PHQ9_SCORE >= 1  ~ 1,
+        PHQ9_SCORE == 0  ~ 0,
+        TRUE             ~ NA_real_
+      ),
+      
+      PHQ9_Category = factor(
+        case_when(
+          PHQ9_SCORE >= 20 ~ "Severe",
+          PHQ9_SCORE >= 15 ~ "Moderately severe",
+          PHQ9_SCORE >= 10 ~ "Moderate",
+          PHQ9_SCORE >= 5  ~ "Mild",
+          PHQ9_SCORE >= 1  ~ "Minimal",
+          PHQ9_SCORE == 0  ~ "None",
+          TRUE             ~ NA_character_
+        ),
+        levels = c(
+          "None",
+          "Minimal",
+          "Mild",
+          "Moderate",
+          "Moderately severe",
+          "Severe"
+        )
+      ),
+      
+      CYCLE = cycle_label
+    )
+  
+  return(processed)
+}
+
+phq_1720 <- process_phq_cycle("P_DPQ", "2017-2020")
+phq_2123 <- process_phq_cycle("DPQ_L", "2021-2023")
+
+phq_combined <- bind_rows(phq_1720, phq_2123)
+
+cat("\n--- Basic QC ---\n")
+cat("Total PHQ records:", nrow(phq_combined), "\n")
+cat("2017-2020 PHQ records:", sum(phq_combined$CYCLE == "2017-2020"), "\n")
+cat("2021-2023 PHQ records:", sum(phq_combined$CYCLE == "2021-2023"), "\n")
+
+cat("\n--- Descriptive Summary of PHQ-9 Scores ---\n")
+print(summary(phq_combined$PHQ9_SCORE))
+
+cat("\n--- Descriptive Summary of Modified PHQ-9 Scores, Item 3 Removed ---\n")
+print(summary(phq_combined$PHQ9_no_sleep_SCORE))
+
+missing_audit <- phq_combined %>%
+  summarise(
+    n_total = n(),
+    
+    missing_phq9_score = sum(is.na(PHQ9_SCORE)),
+    missing_phq9_no_sleep_score = sum(is.na(PHQ9_no_sleep_SCORE)),
+    
+    missing_phq9_main_outcome = sum(is.na(PHQ9_depression_above_10)),
+    missing_phq9_15_outcome = sum(is.na(PHQ9_depression_above_15)),
+    missing_phq9_no_sleep_10_outcome =
+      sum(is.na(PHQ9_no_sleep_depression_above_10)),
+    missing_phq9_no_sleep_9_outcome =
+      sum(is.na(PHQ9_no_sleep_depression_above_9)),
+    
+    missing_suicidal_ideation_daily =
+      sum(is.na(suicidal_ideation_daily))
+  )
+
+cat("\n--- Missingness Audit ---\n")
+print(missing_audit)
+
+phq9_10_dist <- phq_combined %>%
+  count(PHQ9_depression_above_10, name = "n")
+
+phq9_15_dist <- phq_combined %>%
+  count(PHQ9_depression_above_15, name = "n")
+
+phq9_no_sleep_10_dist <- phq_combined %>%
+  count(PHQ9_no_sleep_depression_above_10, name = "n")
+
+phq9_no_sleep_9_dist <- phq_combined %>%
+  count(PHQ9_no_sleep_depression_above_9, name = "n")
+
+suicidal_daily_dist <- phq_combined %>%
+  count(suicidal_ideation_daily, name = "n")
+
+phq9_category_dist <- phq_combined %>%
+  count(PHQ9_Category, name = "n")
+
+cat("\n--- Distribution of Main Outcome: PHQ-9 >= 10 ---\n")
+print(phq9_10_dist)
+
+cat("\n--- Distribution of Sensitivity Outcome: PHQ-9 >= 15 ---\n")
+print(phq9_15_dist)
+
+cat("\n--- Distribution of Sensitivity Outcome: Modified PHQ-9 excluding item 3 >= 10 ---\n")
+print(phq9_no_sleep_10_dist)
+
+cat("\n--- Distribution of Sensitivity Outcome: Modified PHQ-9 excluding item 3 >= 9 ---\n")
+print(phq9_no_sleep_9_dist)
+
+cat("\n--- Distribution of Daily Suicidal Ideation ---\n")
+print(suicidal_daily_dist)
+
+cat("\n--- PHQ-9 Severity Category Distribution ---\n")
+print(phq9_category_dist)
+
+write_csv(
+  missing_audit,
+  file.path(qc_dir, "Step2_PHQ_missingness_audit.csv")
+)
+
+write_csv(
+  phq9_10_dist,
+  file.path(qc_dir, "Step2_PHQ9_ge10_distribution.csv")
+)
+
+write_csv(
+  phq9_15_dist,
+  file.path(qc_dir, "Step2_PHQ9_ge15_distribution.csv")
+)
+
+write_csv(
+  phq9_no_sleep_10_dist,
+  file.path(qc_dir, "Step2_PHQ9_no_sleep_ge10_distribution.csv")
+)
+
+write_csv(
+  phq9_no_sleep_9_dist,
+  file.path(qc_dir, "Step2_PHQ9_no_sleep_ge9_distribution.csv")
+)
+
+write_csv(
+  suicidal_daily_dist,
+  file.path(qc_dir, "Step2_suicidal_ideation_daily_distribution.csv")
+)
+
+write_csv(
+  phq9_category_dist,
+  file.path(qc_dir, "Step2_PHQ9_category_distribution.csv")
+)
+
+export_path <- file.path(export_dir, "2.data.rds")
+
+saveRDS(phq_combined, export_path)
+
+cat("\nProcess Complete. Dataset saved to:", export_path, "\n")
+cat("QC files saved to:", qc_dir, "\n")
+
+# ============================================================
+# PHQ-9 item-level missingness audit
+# ============================================================
+
+phq_item_missing_audit <- phq_combined %>%
+  summarise(N = n(),
+            across(c(DPQ010,DPQ020,DPQ030,DPQ040,DPQ050,DPQ060,DPQ070,DPQ080,DPQ090),
+                   ~sum(is.na(.)),.names="missing_{.col}")) %>%
+  pivot_longer(cols=starts_with("missing_"),
+               names_to="PHQ_item",
+               values_to="missing_n") %>%
+  mutate(PHQ_item=gsub("missing_","",PHQ_item),
+         missing_percent=round(missing_n/N*100,2))
+
+print(phq_item_missing_audit)
+
+write_csv(phq_item_missing_audit,
+          file.path(qc_dir,"Step2_PHQ_item_level_missingness.csv"))
+
+
+# ============================================================
+# PHQ questionnaire completeness audit
+# ============================================================
+
+phq_questionnaire_missing_audit <- phq_combined %>%
+  mutate(
+    questionnaire_missing=ifelse(
+      rowSums(is.na(select(.,DPQ010,DPQ020,DPQ030,DPQ040,DPQ050,
+                           DPQ060,DPQ070,DPQ080,DPQ090)))==9,1,0),
+    
+    item_missing_but_questionnaire_present=ifelse(
+      questionnaire_missing==0 & PHQ9_ITEM_MISSING_N>0,1,0)
+  ) %>%
+  summarise(
+    total_N=n(),
+    questionnaire_missing_n=sum(questionnaire_missing),
+    questionnaire_missing_percent=round(mean(questionnaire_missing)*100,2),
+    item_missing_n=sum(item_missing_but_questionnaire_present),
+    item_missing_percent=round(mean(item_missing_but_questionnaire_present)*100,2),
+    complete_PHQ9_n=sum(PHQ9_ITEM_MISSING_N==0),
+    complete_PHQ9_percent=round(mean(PHQ9_ITEM_MISSING_N==0)*100,2)
+  )
+
+print(phq_questionnaire_missing_audit)
+
+write_csv(phq_questionnaire_missing_audit,
+          file.path(qc_dir,"Step2_PHQ_questionnaire_missing_audit.csv"))
+
+################################################################################
+# Script Name: 3. Sleep Metrics Engineering (NHANES 2017-2023)
+# Purpose:
+#   Clean NHANES sleep variables and derive weekday/weekend sleep timing metrics.
+#
+# Manuscript-consistent version:
+#   - Do NOT delete participants in Step 3.
+#   - Treat NHANES special codes such as refused / don't know as missing.
+#   - Retain raw sleep duration.
+#   - Winsorize extreme sleep duration values to 3-14 hours.
+#   - Create QC flags for implausible duration values.
+#   - Derive sleep onset, wake time, midpoint, SJL, and WCS.
+#
+# Data Cycles:
+#   - 2017-March 2020: P_SLQ
+#   - 2021-2023: SLQ_L
+#
+# Output:
+#   - D:/code/3.data.rds
+################################################################################
+
+# 1. Environment & Libraries ---------------------------------------------------
+
+library(nhanesA)
+library(tidyverse)
+library(stringr)
+
+export_dir <- "D:/code"
+
+if (!dir.exists(export_dir)) {
+  dir.create(export_dir, recursive = TRUE)
+}
+
+qc_dir <- file.path(export_dir, "qc_outputs")
+
+if (!dir.exists(qc_dir)) {
+  dir.create(qc_dir, recursive = TRUE)
+}
+
+# 2. Helper Functions ----------------------------------------------------------
+
+clean_special_codes <- function(x) {
+  x_chr <- as.character(x)
+  x_chr <- str_trim(x_chr)
+  
+  case_when(
+    is.na(x_chr) ~ NA_character_,
+    x_chr %in% c(
+      "",
+      ".",
+      "777",
+      "999",
+      "7777",
+      "9999",
+      "77777",
+      "99999",
+      "Refused",
+      "Don't know",
+      "Don't Know",
+      "DK",
+      "NA"
+    ) ~ NA_character_,
+    TRUE ~ x_chr
+  )
+}
+
+safe_numeric <- function(x) {
+  suppressWarnings(as.numeric(clean_special_codes(x)))
+}
+
+winsorize_duration <- function(x, lower = 3, upper = 14) {
+  x <- as.numeric(x)
+  
+  case_when(
+    is.na(x) ~ NA_real_,
+    x < lower ~ lower,
+    x > upper ~ upper,
+    TRUE ~ x
+  )
+}
+
+time_to_min <- function(time_str) {
+  time_chr <- clean_special_codes(time_str)
+  
+  # If already numeric HHMM format, convert to 4-digit character.
+  # If character HH:MM format, keep as is.
+  time_chr <- case_when(
+    is.na(time_chr) ~ NA_character_,
+    
+    str_detect(time_chr, "^\\d{1,2}:\\d{2}$") ~ time_chr,
+    
+    str_detect(time_chr, "^\\d{3,4}$") ~ {
+      padded <- str_pad(time_chr, width = 4, pad = "0")
+      paste0(str_sub(padded, 1, 2), ":", str_sub(padded, 3, 4))
+    },
+    
+    TRUE ~ NA_character_
+  )
+  
+  parts <- str_split_fixed(time_chr, ":", 2)
+  
+  h <- suppressWarnings(as.numeric(parts[, 1]))
+  m <- suppressWarnings(as.numeric(parts[, 2]))
+  
+  total <- h * 60 + m
+  
+  # Normalize 24:00 to 00:00
+  total <- if_else(total == 1440, 0, total)
+  
+  if_else(
+    !is.na(total) & total >= 0 & total < 1440 & m >= 0 & m < 60,
+    total,
+    NA_real_
+  )
+}
+
+calc_midpoint <- function(sleep_time_str, wake_time_str) {
+  s <- time_to_min(sleep_time_str)
+  w <- time_to_min(wake_time_str)
+  
+  mid <- case_when(
+    is.na(s) | is.na(w) ~ NA_real_,
+    w >= s ~ s + (w - s) / 2,
+    w < s  ~ s + (1440 + w - s) / 2,
+    TRUE   ~ NA_real_
+  )
+  
+  if_else(mid >= 1440, mid - 1440, mid)
+}
+
+min_to_hour_decimal <- function(x) {
+  x / 60
+}
+
+min_to_hhmm <- function(x) {
+  ifelse(
+    is.na(x),
+    NA_character_,
+    sprintf(
+      "%02d:%02d",
+      floor(x / 60),
+      round(x %% 60)
+    )
+  )
+}
+
+# 3. Download Raw Sleep Data ---------------------------------------------------
+
+cat("Downloading NHANES sleep data...\n")
+
+s_1720_raw <- nhanes("P_SLQ")
+s_2123_raw <- nhanes("SLQ_L")
+
+# 4. Process One Cycle ---------------------------------------------------------
+
+process_sleep_cycle <- function(raw_data, cycle_label) {
+  
+  cat("Processing sleep cycle:", cycle_label, "\n")
+  
+  required_vars <- c(
+    "SEQN",
+    "SLD012", "SLD013",
+    "SLQ300", "SLQ310", "SLQ320", "SLQ330"
+  )
+  
+  missing_vars <- setdiff(required_vars, names(raw_data))
+  
+  if (length(missing_vars) > 0) {
+    stop(
+      "Missing required sleep variables in ",
+      cycle_label,
+      ": ",
+      paste(missing_vars, collapse = ", ")
+    )
+  }
+  
+  processed <- raw_data %>%
+    select(any_of(names(raw_data))) %>%
+    mutate(
+      SEQN = safe_numeric(SEQN),
+      CYCLE = cycle_label
+    ) %>%
+    mutate(
+      # Retain raw duration before cleaning
+      dur_wd_raw = safe_numeric(SLD012),
+      dur_we_raw = safe_numeric(SLD013),
+      
+      # Special-code-cleaned raw timing strings
+      sleep_onset_wd_raw = clean_special_codes(SLQ300),
+      wake_time_wd_raw   = clean_special_codes(SLQ310),
+      sleep_onset_we_raw = clean_special_codes(SLQ320),
+      wake_time_we_raw   = clean_special_codes(SLQ330),
+      
+      # Implausible-duration flags before winsorization
+      dur_wd_implausible_flag = case_when(
+        is.na(dur_wd_raw) ~ NA_real_,
+        dur_wd_raw < 3 | dur_wd_raw > 14 ~ 1,
+        TRUE ~ 0
+      ),
+      
+      dur_we_implausible_flag = case_when(
+        is.na(dur_we_raw) ~ NA_real_,
+        dur_we_raw < 3 | dur_we_raw > 14 ~ 1,
+        TRUE ~ 0
+      ),
+      
+      # Manuscript-consistent analytic duration:
+      # extreme values are truncated to boundaries rather than deleted.
+      dur_wd = winsorize_duration(dur_wd_raw, lower = 3, upper = 14),
+      dur_we = winsorize_duration(dur_we_raw, lower = 3, upper = 14),
+      
+      # Timing variables in minutes since midnight
+      sleep_onset_wd_min = time_to_min(sleep_onset_wd_raw),
+      wake_time_wd_min   = time_to_min(wake_time_wd_raw),
+      sleep_onset_we_min = time_to_min(sleep_onset_we_raw),
+      wake_time_we_min   = time_to_min(wake_time_we_raw),
+      
+      # Timing variables as decimal hours for modeling / plotting
+      sleep_onset_wd_hour = min_to_hour_decimal(sleep_onset_wd_min),
+      wake_time_wd_hour   = min_to_hour_decimal(wake_time_wd_min),
+      sleep_onset_we_hour = min_to_hour_decimal(sleep_onset_we_min),
+      wake_time_we_hour   = min_to_hour_decimal(wake_time_we_min),
+      
+      # Midpoints
+      midpoint_wd_min = calc_midpoint(sleep_onset_wd_raw, wake_time_wd_raw),
+      midpoint_we_min = calc_midpoint(sleep_onset_we_raw, wake_time_we_raw),
+      
+      midpoint_wd_hour = min_to_hour_decimal(midpoint_wd_min),
+      midpoint_we_hour = min_to_hour_decimal(midpoint_we_min),
+      
+      midpoint_wd_hhmm = min_to_hhmm(midpoint_wd_min),
+      midpoint_we_hhmm = min_to_hhmm(midpoint_we_min),
+      
+      # Social jetlag
+      SJL_raw_min = midpoint_we_min - midpoint_wd_min,
+      
+      SJL_raw_min = case_when(
+        is.na(SJL_raw_min) ~ NA_real_,
+        SJL_raw_min > 720  ~ SJL_raw_min - 1440,
+        SJL_raw_min < -720 ~ SJL_raw_min + 1440,
+        TRUE ~ SJL_raw_min
+      ),
+      
+      SJL_abs_min = abs(SJL_raw_min),
+      SJL_abs_hour = SJL_abs_min / 60,
+      
+      # Weekend catch-up sleep
+      WCS_raw_hour = dur_we - dur_wd,
+      WCS_abs_hour = abs(WCS_raw_hour),
+      
+      # Sleep duration categories
+      dur_wd_cat = case_when(
+        is.na(dur_wd) ~ NA_character_,
+        dur_wd < 7 ~ "<7 hours",
+        dur_wd >= 7 & dur_wd < 9 ~ "7-9 hours",
+        dur_wd >= 9 ~ "≥9 hours",
+        TRUE ~ NA_character_
+      ),
+      
+      dur_we_cat = case_when(
+        is.na(dur_we) ~ NA_character_,
+        dur_we < 7 ~ "<7 hours",
+        dur_we >= 7 & dur_we < 9 ~ "7-9 hours",
+        dur_we >= 9 ~ "≥9 hours",
+        TRUE ~ NA_character_
+      ),
+      
+      dur_wd_cat = factor(
+        dur_wd_cat,
+        levels = c("7-9 hours", "<7 hours", "≥9 hours")
+      ),
+      
+      dur_we_cat = factor(
+        dur_we_cat,
+        levels = c("7-9 hours", "<7 hours", "≥9 hours")
+      ),
+      
+      dur_wd_cat_num = as.numeric(dur_wd_cat),
+      dur_we_cat_num = as.numeric(dur_we_cat)
+    )
+  
+  return(processed)
+}
+
+# 5. Process and Merge ---------------------------------------------------------
+
+sleep_1720 <- process_sleep_cycle(s_1720_raw, "2017-2020")
+sleep_2123 <- process_sleep_cycle(s_2123_raw, "2021-2023")
+
+sleep_processed <- bind_rows(sleep_1720, sleep_2123)
+
+# 6. QC ------------------------------------------------------------------------
+
+cat("\n--- Basic Sleep QC ---\n")
+cat("Total sleep records:", nrow(sleep_processed), "\n")
+cat("2017-2020 sleep records:", sum(sleep_processed$CYCLE == "2017-2020"), "\n")
+cat("2021-2023 sleep records:", sum(sleep_processed$CYCLE == "2021-2023"), "\n")
+
+missing_audit <- sleep_processed %>%
+  summarise(
+    n_total = n(),
+    
+    missing_dur_wd_raw = sum(is.na(dur_wd_raw)),
+    missing_dur_we_raw = sum(is.na(dur_we_raw)),
+    
+    missing_dur_wd = sum(is.na(dur_wd)),
+    missing_dur_we = sum(is.na(dur_we)),
+    
+    n_dur_wd_implausible = sum(dur_wd_implausible_flag == 1, na.rm = TRUE),
+    n_dur_we_implausible = sum(dur_we_implausible_flag == 1, na.rm = TRUE),
+    
+    missing_sleep_onset_wd = sum(is.na(sleep_onset_wd_min)),
+    missing_wake_time_wd = sum(is.na(wake_time_wd_min)),
+    missing_sleep_onset_we = sum(is.na(sleep_onset_we_min)),
+    missing_wake_time_we = sum(is.na(wake_time_we_min)),
+    
+    missing_midpoint_wd = sum(is.na(midpoint_wd_min)),
+    missing_midpoint_we = sum(is.na(midpoint_we_min)),
+    
+    missing_SJL = sum(is.na(SJL_abs_hour)),
+    missing_WCS = sum(is.na(WCS_abs_hour))
+  )
+
+cat("\n--- Missingness / Implausible Value Audit ---\n")
+print(missing_audit)
+
+range_qc <- sleep_processed %>%
+  summarise(
+    min_dur_wd_raw = min(dur_wd_raw, na.rm = TRUE),
+    max_dur_wd_raw = max(dur_wd_raw, na.rm = TRUE),
+    min_dur_we_raw = min(dur_we_raw, na.rm = TRUE),
+    max_dur_we_raw = max(dur_we_raw, na.rm = TRUE),
+    
+    min_dur_wd_winsorized = min(dur_wd, na.rm = TRUE),
+    max_dur_wd_winsorized = max(dur_wd, na.rm = TRUE),
+    min_dur_we_winsorized = min(dur_we, na.rm = TRUE),
+    max_dur_we_winsorized = max(dur_we, na.rm = TRUE),
+    
+    min_onset_wd_hour = min(sleep_onset_wd_hour, na.rm = TRUE),
+    max_onset_wd_hour = max(sleep_onset_wd_hour, na.rm = TRUE),
+    min_wake_wd_hour = min(wake_time_wd_hour, na.rm = TRUE),
+    max_wake_wd_hour = max(wake_time_wd_hour, na.rm = TRUE),
+    
+    min_midpoint_wd_hour = min(midpoint_wd_hour, na.rm = TRUE),
+    max_midpoint_wd_hour = max(midpoint_wd_hour, na.rm = TRUE),
+    min_midpoint_we_hour = min(midpoint_we_hour, na.rm = TRUE),
+    max_midpoint_we_hour = max(midpoint_we_hour, na.rm = TRUE),
+    
+    max_SJL_abs_hour = max(SJL_abs_hour, na.rm = TRUE),
+    max_WCS_abs_hour = max(WCS_abs_hour, na.rm = TRUE)
+  )
+
+cat("\n--- Range QC ---\n")
+print(range_qc)
+
+duration_category_qc <- sleep_processed %>%
+  summarise(
+    weekday_7_9 = sum(dur_wd_cat == "7-9 hours", na.rm = TRUE),
+    weekday_lt7 = sum(dur_wd_cat == "<7 hours", na.rm = TRUE),
+    weekday_ge9 = sum(dur_wd_cat == "≥9 hours", na.rm = TRUE),
+    weekend_7_9 = sum(dur_we_cat == "7-9 hours", na.rm = TRUE),
+    weekend_lt7 = sum(dur_we_cat == "<7 hours", na.rm = TRUE),
+    weekend_ge9 = sum(dur_we_cat == "≥9 hours", na.rm = TRUE)
+  )
+
+cat("\n--- Sleep Duration Category QC ---\n")
+print(duration_category_qc)
+
+# 7. Save QC Outputs -----------------------------------------------------------
+
+write_csv(
+  missing_audit,
+  file.path(qc_dir, "Step3_sleep_missingness_implausible_audit.csv")
+)
+
+write_csv(
+  range_qc,
+  file.path(qc_dir, "Step3_sleep_range_qc.csv")
+)
+
+write_csv(
+  duration_category_qc,
+  file.path(qc_dir, "Step3_sleep_duration_category_qc.csv")
+)
+
+# 8. Export --------------------------------------------------------------------
+
+save_path <- file.path(export_dir, "3.data.rds")
+
+saveRDS(sleep_processed, save_path)
+
+cat("\nProcessing complete. Dataset saved to:", save_path, "\n")
+cat("QC files saved to:", qc_dir, "\n")
+cat(
+  "Final Dataset dimensions:",
+  dim(sleep_processed)[1],
+  "rows and",
+  dim(sleep_processed)[2],
+  "variables.\n"
+)
+
+################################################################################
+# Script Name: 4. Smoking Status Engineering (NHANES 2017-2023)
+# Purpose:
+#   Define smoking status using the standard NHANES cigarette-smoking definition.
+#
+# Manuscript-consistent definition:
+#   Never smoker:
+#     - smoked fewer than 100 cigarettes in life
+#   Former smoker:
+#     - smoked at least 100 cigarettes in life, but does not currently smoke
+#   Current smoker:
+#     - smoked at least 100 cigarettes in life and currently smokes every day
+#       or some days
+#
+# Core variables:
+#   SMQ020:
+#     Smoked at least 100 cigarettes in life
+#     1 = Yes
+#     2 = No
+#     7 = Refused
+#     9 = Don't know
+#
+#   SMQ040:
+#     Do you now smoke cigarettes?
+#     1 = Every day
+#     2 = Some days
+#     3 = Not at all
+#     7 = Refused
+#     9 = Don't know
+#
+# Data Cycles:
+#   - 2017-March 2020: P_SMQ
+#   - 2021-2023: SMQ_L
+#
+# Output:
+#   - D:/code/4.data.rds
+################################################################################
+
+# 1. Libraries -----------------------------------------------------------------
+
+library(nhanesA)
+library(tidyverse)
+
+# 2. Environment ---------------------------------------------------------------
+
+export_dir <- "D:/code"
+
+if (!dir.exists(export_dir)) {
+  dir.create(export_dir, recursive = TRUE)
+}
+
+qc_dir <- file.path(export_dir, "qc_outputs")
+
+if (!dir.exists(qc_dir)) {
+  dir.create(qc_dir, recursive = TRUE)
+}
+
+# 3. Helper Functions ----------------------------------------------------------
+
+clean_smq_code <- function(x, valid_values) {
+  x <- suppressWarnings(as.numeric(x))
+  
+  case_when(
+    is.na(x) ~ NA_real_,
+    x %in% valid_values ~ x,
+    TRUE ~ NA_real_
+  )
+}
+
+process_smoking_cycle <- function(table_name, cycle_label) {
+  
+  cat("Processing smoking data:", cycle_label, "\n")
+  
+  raw_data <- nhanes(table_name)
+  
+  required_vars <- c("SEQN", "SMQ020", "SMQ040")
+  
+  missing_vars <- setdiff(required_vars, names(raw_data))
+  
+  if (length(missing_vars) > 0) {
+    stop(
+      "Missing required smoking variables in ",
+      table_name,
+      ": ",
+      paste(missing_vars, collapse = ", ")
+    )
+  }
+  
+  processed <- raw_data %>%
+    as_tibble() %>%
+    select(all_of(required_vars)) %>%
+    mutate(
+      SEQN = suppressWarnings(as.numeric(SEQN)),
+      
+      SMQ020_raw = SMQ020,
+      SMQ040_raw = SMQ040,
+      
+      SMQ020 = clean_smq_code(SMQ020, valid_values = c(1, 2)),
+      SMQ040 = clean_smq_code(SMQ040, valid_values = c(1, 2, 3)),
+      
+      smoked_100_cigarettes = case_when(
+        SMQ020 == 1 ~ 1,
+        SMQ020 == 2 ~ 0,
+        TRUE        ~ NA_real_
+      ),
+      
+      # This variable is meaningful only among participants who smoked
+      # at least 100 cigarettes in life.
+      current_smoking_now_among_ever_smokers = case_when(
+        SMQ020 == 1 & SMQ040 %in% c(1, 2) ~ 1,
+        SMQ020 == 1 & SMQ040 == 3         ~ 0,
+        SMQ020 == 1 & is.na(SMQ040)       ~ NA_real_,
+        TRUE                              ~ NA_real_
+      ),
+      
+      smoke_status = case_when(
+        # Never smoker
+        SMQ020 == 2 ~ 0,
+        
+        # Former smoker
+        SMQ020 == 1 & SMQ040 == 3 ~ 1,
+        
+        # Current smoker
+        SMQ020 == 1 & SMQ040 %in% c(1, 2) ~ 2,
+        
+        TRUE ~ NA_real_
+      ),
+      
+      smoke_status_label = factor(
+        smoke_status,
+        levels = c(0, 1, 2),
+        labels = c(
+          "Never",
+          "Former",
+          "Current"
+        )
+      ),
+      
+      # Backward-compatible names used in older scripts
+      smoke_label = smoke_status_label,
+      smoke_status_num = smoke_status,
+      
+      CYCLE = cycle_label
+    )
+  
+  return(processed)
+}
+
+# 4. Process Cycles ------------------------------------------------------------
+
+smoke_1720 <- process_smoking_cycle("P_SMQ", "2017-2020")
+smoke_2123 <- process_smoking_cycle("SMQ_L", "2021-2023")
+
+smoke_final <- bind_rows(smoke_1720, smoke_2123)
+
+# 5. Quality Control -----------------------------------------------------------
+
+cat("\n--- Smoking Status Distribution by Cycle ---\n")
+
+smoke_dist_cycle <- smoke_final %>%
+  count(CYCLE, smoke_status_label, name = "n") %>%
+  arrange(CYCLE, smoke_status_label)
+
+print(smoke_dist_cycle)
+
+cat("\n--- Smoking Status Overall Distribution ---\n")
+
+smoke_dist_overall <- smoke_final %>%
+  count(smoke_status_label, name = "n") %>%
+  arrange(smoke_status_label)
+
+print(smoke_dist_overall)
+
+cat("\n--- Missingness Audit ---\n")
+
+missing_audit <- smoke_final %>%
+  summarise(
+    n_total = n(),
+    
+    missing_SMQ020 = sum(is.na(SMQ020)),
+    
+    # SMQ040 is only structurally meaningful among ever smokers.
+    # Never smokers are not counted as missing for current-smoking status.
+    n_ever_smokers = sum(SMQ020 == 1, na.rm = TRUE),
+    
+    missing_SMQ040_among_ever_smokers =
+      sum(SMQ020 == 1 & is.na(SMQ040), na.rm = TRUE),
+    
+    missing_smoked_100_cigarettes =
+      sum(is.na(smoked_100_cigarettes)),
+    
+    missing_current_smoking_now_among_ever_smokers =
+      sum(SMQ020 == 1 & is.na(current_smoking_now_among_ever_smokers), na.rm = TRUE),
+    
+    missing_smoke_status =
+      sum(is.na(smoke_status_label))
+  )
+
+print(missing_audit)
+
+cat("\n--- Cross-tab: SMQ020 x SMQ040 x Smoking Status ---\n")
+
+cross_tab <- smoke_final %>%
+  count(SMQ020, SMQ040, smoke_status_label, name = "n") %>%
+  arrange(SMQ020, SMQ040, smoke_status_label)
+
+print(cross_tab)
+
+cat("\n--- Cycle-specific Missingness Audit ---\n")
+
+missing_audit_cycle <- smoke_final %>%
+  group_by(CYCLE) %>%
+  summarise(
+    n_total = n(),
+    
+    missing_SMQ020 = sum(is.na(SMQ020)),
+    
+    n_ever_smokers = sum(SMQ020 == 1, na.rm = TRUE),
+    
+    missing_SMQ040_among_ever_smokers =
+      sum(SMQ020 == 1 & is.na(SMQ040), na.rm = TRUE),
+    
+    missing_smoke_status =
+      sum(is.na(smoke_status_label)),
+    
+    .groups = "drop"
+  )
+
+print(missing_audit_cycle)
+
+# 6. Save QC Outputs -----------------------------------------------------------
+
+write_csv(
+  smoke_dist_cycle,
+  file.path(qc_dir, "Step4_smoking_status_distribution_by_cycle.csv")
+)
+
+write_csv(
+  smoke_dist_overall,
+  file.path(qc_dir, "Step4_smoking_status_distribution_overall.csv")
+)
+
+write_csv(
+  missing_audit,
+  file.path(qc_dir, "Step4_smoking_missingness_audit.csv")
+)
+
+write_csv(
+  missing_audit_cycle,
+  file.path(qc_dir, "Step4_smoking_missingness_audit_by_cycle.csv")
+)
+
+write_csv(
+  cross_tab,
+  file.path(qc_dir, "Step4_smoking_SMQ020_SMQ040_crosstab.csv")
+)
+
+# 7. Export --------------------------------------------------------------------
+
+save_path <- file.path(export_dir, "4.data.rds")
+
+saveRDS(smoke_final, save_path)
+
+cat("\nProcessing complete. Dataset saved to:", save_path, "\n")
+cat("QC files saved to:", qc_dir, "\n")
+cat(
+  "Final Dataset dimensions:",
+  dim(smoke_final)[1],
+  "rows and",
+  dim(smoke_final)[2],
+  "variables.\n"
+)
+
+################################################################################
+# Script Name: 5. Covariate Processing - Body Mass Index (BMI)
+# Purpose:
+#   Clean NHANES BMI data, perform anthropometric QC, and generate
+#   standard NIH/WHO BMI categories.
+#
+# Manuscript-consistent version:
+#   - Retain raw BMI values
+#   - Generate implausible-value QC flags
+#   - Do NOT delete participants
+#   - Implausible BMI values are treated as missing for analytic BMI
+#   - Standard NIH/WHO BMI categorization
+#
+# Data Cycles:
+#   - 2017-March 2020: P_BMX
+#   - 2021-2023: BMX_L
+#
+# Output:
+#   - D:/code/5.data.rds
+################################################################################
+
+# 1. Environment & Libraries ---------------------------------------------------
+
+library(nhanesA)
+library(tidyverse)
+
+export_dir <- "D:/code"
+
+if (!dir.exists(export_dir)) {
+  dir.create(export_dir, recursive = TRUE)
+}
+
+qc_dir <- file.path(export_dir, "qc_outputs")
+
+if (!dir.exists(qc_dir)) {
+  dir.create(qc_dir, recursive = TRUE)
+}
+
+# 2. Helper Functions ----------------------------------------------------------
+
+clean_numeric <- function(x) {
+  suppressWarnings(as.numeric(x))
+}
+
+clean_bmi <- function(x,
+                      lower = 10,
+                      upper = 80) {
+  
+  case_when(
+    is.na(x) ~ NA_real_,
+    x < lower ~ NA_real_,
+    x > upper ~ NA_real_,
+    TRUE ~ x
+  )
+}
+
+# 3. Data Retrieval & Harmonization --------------------------------------------
+
+cat("Harmonizing BMI data across cycles...\n")
+
+process_bmi <- function(table_name, cycle_label) {
+  
+  raw_data <- nhanes(table_name)
+  
+  required_vars <- c("SEQN", "BMXBMI")
+  
+  missing_vars <- setdiff(required_vars, names(raw_data))
+  
+  if (length(missing_vars) > 0) {
+    stop(
+      "Missing required BMI variables in ",
+      table_name,
+      ": ",
+      paste(missing_vars, collapse = ", ")
+    )
+  }
+  
+  processed <- raw_data %>%
+    as_tibble() %>%
+    select(all_of(required_vars)) %>%
+    mutate(
+      SEQN = clean_numeric(SEQN),
+      
+      BMI_raw = clean_numeric(BMXBMI),
+      
+      # Implausible-value QC flags
+      BMI_implausible_flag = case_when(
+        is.na(BMI_raw) ~ NA_real_,
+        BMI_raw < 10 ~ 1,
+        BMI_raw > 80 ~ 1,
+        TRUE ~ 0
+      ),
+      
+      # Analytic BMI variable
+      BMI_value = clean_bmi(
+        BMI_raw,
+        lower = 10,
+        upper = 80
+      ),
+      
+      CYCLE = cycle_label
+    )
+  
+  return(processed)
+}
+
+bmi_1720 <- process_bmi("P_BMX", "2017-2020")
+bmi_2123 <- process_bmi("BMX_L", "2021-2023")
+
+bmi_combined <- bind_rows(bmi_1720, bmi_2123)
+
+# 4. Clinical Categorization ---------------------------------------------------
+
+bmi_processed <- bmi_combined %>%
+  mutate(
+    
+    # Standard NIH / WHO BMI categories
+    BMI_cat = cut(
+      BMI_value,
+      breaks = c(-Inf, 18.5, 25, 30, Inf),
+      labels = c(
+        "Underweight",
+        "Normal",
+        "Overweight",
+        "Obese"
+      ),
+      right = FALSE
+    ),
+    
+    # Ordinal coding
+    BMI_cat_ordinal = as.integer(BMI_cat),
+    
+    # Detailed obesity subcategories
+    BMI_detailed = cut(
+      BMI_value,
+      breaks = c(-Inf, 18.5, 25, 30, 35, 40, Inf),
+      labels = c(
+        "Underweight",
+        "Normal",
+        "Overweight",
+        "Obesity Class I",
+        "Obesity Class II",
+        "Obesity Class III"
+      ),
+      right = FALSE
+    ),
+    
+    BMI_detailed_ordinal = as.integer(BMI_detailed)
+  ) %>%
+  select(
+    SEQN,
+    
+    BMI_raw,
+    BMI_implausible_flag,
+    
+    BMI_value,
+    
+    BMI_cat,
+    BMI_cat_ordinal,
+    
+    BMI_detailed,
+    BMI_detailed_ordinal,
+    
+    CYCLE
+  )
+
+# 5. Quality Control -----------------------------------------------------------
+
+cat("\n--- BMI Raw Value Statistics ---\n")
+print(summary(bmi_processed$BMI_raw))
+
+cat("\n--- BMI Analytic Value Statistics ---\n")
+print(summary(bmi_processed$BMI_value))
+
+cat("\n--- BMI Category Distribution ---\n")
+
+BMI_category_dist <- bmi_processed %>%
+  count(BMI_cat, name = "n")
+
+print(BMI_category_dist)
+
+cat("\n--- Detailed BMI Category Distribution ---\n")
+
+BMI_detailed_dist <- bmi_processed %>%
+  count(BMI_detailed, name = "n")
+
+print(BMI_detailed_dist)
+
+cat("\n--- Implausible BMI QC ---\n")
+
+BMI_implausible_qc <- bmi_processed %>%
+  summarise(
+    n_total = n(),
+    
+    missing_BMI_raw = sum(is.na(BMI_raw)),
+    missing_BMI_value = sum(is.na(BMI_value)),
+    
+    n_implausible_BMI =
+      sum(BMI_implausible_flag == 1, na.rm = TRUE),
+    
+    n_BMI_below_10 =
+      sum(BMI_raw < 10, na.rm = TRUE),
+    
+    n_BMI_above_80 =
+      sum(BMI_raw > 80, na.rm = TRUE),
+    
+    min_BMI_raw =
+      min(BMI_raw, na.rm = TRUE),
+    
+    max_BMI_raw =
+      max(BMI_raw, na.rm = TRUE),
+    
+    min_BMI_analytic =
+      min(BMI_value, na.rm = TRUE),
+    
+    max_BMI_analytic =
+      max(BMI_value, na.rm = TRUE)
+  )
+
+print(BMI_implausible_qc)
+
+cat("\n--- Cycle-specific BMI QC ---\n")
+
+BMI_cycle_qc <- bmi_processed %>%
+  group_by(CYCLE) %>%
+  summarise(
+    n_total = n(),
+    
+    missing_BMI_raw =
+      sum(is.na(BMI_raw)),
+    
+    missing_BMI_value =
+      sum(is.na(BMI_value)),
+    
+    n_implausible_BMI =
+      sum(BMI_implausible_flag == 1, na.rm = TRUE),
+    
+    mean_BMI =
+      mean(BMI_value, na.rm = TRUE),
+    
+    median_BMI =
+      median(BMI_value, na.rm = TRUE),
+    
+    .groups = "drop"
+  )
+
+print(BMI_cycle_qc)
+
+# 6. Save QC Outputs -----------------------------------------------------------
+
+write_csv(
+  BMI_category_dist,
+  file.path(qc_dir, "Step5_BMI_category_distribution.csv")
+)
+
+write_csv(
+  BMI_detailed_dist,
+  file.path(qc_dir, "Step5_BMI_detailed_distribution.csv")
+)
+
+write_csv(
+  BMI_implausible_qc,
+  file.path(qc_dir, "Step5_BMI_implausible_qc.csv")
+)
+
+write_csv(
+  BMI_cycle_qc,
+  file.path(qc_dir, "Step5_BMI_cycle_qc.csv")
+)
+
+# 7. Export --------------------------------------------------------------------
+
+save_path <- file.path(export_dir, "5.data.rds")
+
+saveRDS(bmi_processed, save_path)
+
+cat("\nBMI data successfully exported to:", save_path, "\n")
+cat("QC files saved to:", qc_dir, "\n")
+
+cat(
+  "Final Dataset dimensions:",
+  dim(bmi_processed)[1],
+  "rows and",
+  dim(bmi_processed)[2],
+  "variables.\n"
+)
