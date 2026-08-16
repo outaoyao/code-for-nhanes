@@ -1,0 +1,2088 @@
+################################################################################
+# Script Name: 6. Covariate Processing - Alcohol Consumption
+# Purpose:
+#   Harmonize NHANES alcohol-use status across 2017-2023 cycles.
+#
+# Manuscript-consistent definition:
+#   Alcohol use was categorized as:
+#     0 = Never
+#         - fewer than 12 drinks in lifetime
+#     1 = Non-heavy ever drinker################################################################################
+# Script Name: 6. Covariate Processing - Alcohol Consumption
+# Purpose:
+#   Harmonize NHANES alcohol-use status across 2017-2023 cycles.
+#
+# Manuscript-consistent definition:
+#   Alcohol use was categorized as:
+#     0 = Never
+#         - fewer than 12 drinks in lifetime
+#     1 = Non-heavy ever drinker
+#         - at least 12 drinks in lifetime, but no heavy drinking history
+#     2 = Heavy
+#         - reported heavy drinking history
+#
+# Core variables:
+#   ALQ111:
+#     Had at least 12 alcohol drinks in lifetime
+#     1 = Yes
+#     2 = No
+#     7 = Refused
+#     9 = Don't know
+#
+#   ALQ151:
+#     Ever had 4/5 or more drinks every day
+#     1 = Yes
+#     2 = No
+#     7 = Refused
+#     9 = Don't know
+#
+# Data Cycles:
+#   - 2017-March 2020: P_ALQ
+#   - 2021-2023: ALQ_L
+#
+# Output:
+#   - D:/code/6.data.rds
+################################################################################
+
+# 1. Environment & Libraries ---------------------------------------------------
+
+library(nhanesA)
+library(tidyverse)
+library(stringr)
+
+# 2. Environment ---------------------------------------------------------------
+
+export_dir <- "D:/code"
+
+if (!dir.exists(export_dir)) {
+  dir.create(export_dir, recursive = TRUE)
+}
+
+qc_dir <- file.path(export_dir, "qc_outputs")
+
+if (!dir.exists(qc_dir)) {
+  dir.create(qc_dir, recursive = TRUE)
+}
+
+# 3. Helper Functions ----------------------------------------------------------
+
+clean_yes_no_code <- function(x) {
+  
+  x_chr <- as.character(x)
+  x_chr <- str_trim(x_chr)
+  x_low <- str_to_lower(x_chr)
+  
+  case_when(
+    is.na(x_chr) ~ NA_real_,
+    
+    # Numeric codes
+    x_chr == "1" ~ 1,
+    x_chr == "2" ~ 2,
+    
+    # Character labels from nhanesA
+    x_low == "yes" ~ 1,
+    x_low == "no"  ~ 2,
+    
+    # Invalid / missing response labels
+    x_low %in% c(
+      "",
+      ".",
+      "7",
+      "9",
+      "77",
+      "99",
+      "777",
+      "999",
+      "refused",
+      "don't know",
+      "dont know",
+      "missing",
+      "na"
+    ) ~ NA_real_,
+    
+    TRUE ~ NA_real_
+  )
+}
+
+process_alcohol_cycle <- function(table_name, cycle_label) {
+  
+  cat("Processing alcohol data:", cycle_label, "\n")
+  
+  raw_data <- nhanes(table_name)
+  
+  required_vars <- c("SEQN", "ALQ111", "ALQ151")
+  
+  missing_vars <- setdiff(required_vars, names(raw_data))
+  
+  if (length(missing_vars) > 0) {
+    stop(
+      "Missing required alcohol variables in ",
+      table_name,
+      ": ",
+      paste(missing_vars, collapse = ", ")
+    )
+  }
+  
+  cat("\nRaw ALQ111 distribution for", cycle_label, ":\n")
+  print(table(raw_data$ALQ111, useNA = "ifany"))
+  
+  cat("\nRaw ALQ151 distribution for", cycle_label, ":\n")
+  print(table(raw_data$ALQ151, useNA = "ifany"))
+  
+  processed <- raw_data %>%
+    as_tibble() %>%
+    select(all_of(required_vars)) %>%
+    mutate(
+      SEQN = suppressWarnings(as.numeric(SEQN)),
+      
+      ALQ111_raw = ALQ111,
+      ALQ151_raw = ALQ151,
+      
+      ALQ111 = clean_yes_no_code(ALQ111),
+      ALQ151 = clean_yes_no_code(ALQ151),
+      
+      lifetime_12_drinks = case_when(
+        ALQ111 == 1 ~ 1,
+        ALQ111 == 2 ~ 0,
+        TRUE        ~ NA_real_
+      ),
+      
+      heavy_drinking_history = case_when(
+        ALQ151 == 1 ~ 1,
+        ALQ151 == 2 ~ 0,
+        TRUE        ~ NA_real_
+      ),
+      
+      Alcohol_Status = case_when(
+        # Never drinker: fewer than 12 drinks in lifetime
+        ALQ111 == 2 ~ 0,
+        
+        # Heavy drinker: yes to ALQ151
+        ALQ111 == 1 & ALQ151 == 1 ~ 2,
+        
+        # Non-heavy ever drinker: >=12 drinks lifetime, no to ALQ151
+        ALQ111 == 1 & ALQ151 == 2 ~ 1,
+        
+        TRUE ~ NA_real_
+      ),
+      
+      Alcohol_Label = factor(
+        Alcohol_Status,
+        levels = c(0, 1, 2),
+        labels = c(
+          "Never",
+          "Non-heavy ever drinker",
+          "Heavy"
+        )
+      ),
+      
+      # Backward-compatible aliases for older scripts
+      AlcoholCategory = Alcohol_Label,
+      Alcohol_Status_Num = Alcohol_Status,
+      
+      CYCLE = cycle_label
+    )
+  
+  return(processed)
+}
+
+# 4. Process Cycles ------------------------------------------------------------
+
+alq_1720 <- process_alcohol_cycle("P_ALQ", "2017-2020")
+alq_2123 <- process_alcohol_cycle("ALQ_L", "2021-2023")
+
+alcohol_combined <- bind_rows(alq_1720, alq_2123)
+
+# 5. Quality Control -----------------------------------------------------------
+
+cat("\n--- Alcohol Status Distribution by Cycle ---\n")
+
+alcohol_dist_cycle <- alcohol_combined %>%
+  count(CYCLE, Alcohol_Label, name = "n") %>%
+  arrange(CYCLE, Alcohol_Label)
+
+print(alcohol_dist_cycle)
+
+cat("\n--- Alcohol Status Overall Distribution ---\n")
+
+alcohol_dist_overall <- alcohol_combined %>%
+  count(Alcohol_Label, name = "n") %>%
+  arrange(Alcohol_Label)
+
+print(alcohol_dist_overall)
+
+cat("\n--- Missingness Audit ---\n")
+
+missing_audit <- alcohol_combined %>%
+  summarise(
+    n_total = n(),
+    
+    missing_ALQ111 =
+      sum(is.na(ALQ111)),
+    
+    n_lifetime_ever_drinkers =
+      sum(ALQ111 == 1, na.rm = TRUE),
+    
+    missing_ALQ151_among_lifetime_ever_drinkers =
+      sum(ALQ111 == 1 & is.na(ALQ151), na.rm = TRUE),
+    
+    missing_lifetime_12_drinks =
+      sum(is.na(lifetime_12_drinks)),
+    
+    missing_heavy_drinking_history_among_ever_drinkers =
+      sum(ALQ111 == 1 & is.na(heavy_drinking_history), na.rm = TRUE),
+    
+    missing_Alcohol_Status =
+      sum(is.na(Alcohol_Label))
+  )
+
+print(missing_audit)
+
+cat("\n--- Cross-tab: ALQ111 x ALQ151 x Alcohol Status ---\n")
+
+cross_tab <- alcohol_combined %>%
+  count(ALQ111, ALQ151, Alcohol_Label, name = "n") %>%
+  arrange(ALQ111, ALQ151, Alcohol_Label)
+
+print(cross_tab)
+
+cat("\n--- Cycle-specific Missingness Audit ---\n")
+
+missing_audit_cycle <- alcohol_combined %>%
+  group_by(CYCLE) %>%
+  summarise(
+    n_total = n(),
+    
+    missing_ALQ111 =
+      sum(is.na(ALQ111)),
+    
+    n_lifetime_ever_drinkers =
+      sum(ALQ111 == 1, na.rm = TRUE),
+    
+    missing_ALQ151_among_lifetime_ever_drinkers =
+      sum(ALQ111 == 1 & is.na(ALQ151), na.rm = TRUE),
+    
+    missing_Alcohol_Status =
+      sum(is.na(Alcohol_Label)),
+    
+    .groups = "drop"
+  )
+
+print(missing_audit_cycle)
+
+cat("\n--- Raw-label QC after harmonization ---\n")
+
+raw_label_qc <- alcohol_combined %>%
+  count(CYCLE, ALQ111_raw, ALQ151_raw, Alcohol_Label, name = "n") %>%
+  arrange(CYCLE, ALQ111_raw, ALQ151_raw, Alcohol_Label)
+
+print(raw_label_qc)
+
+# 6. Save QC Outputs -----------------------------------------------------------
+
+write_csv(
+  alcohol_dist_cycle,
+  file.path(qc_dir, "Step6_alcohol_status_distribution_by_cycle.csv")
+)
+
+write_csv(
+  alcohol_dist_overall,
+  file.path(qc_dir, "Step6_alcohol_status_distribution_overall.csv")
+)
+
+write_csv(
+  missing_audit,
+  file.path(qc_dir, "Step6_alcohol_missingness_audit.csv")
+)
+
+write_csv(
+  missing_audit_cycle,
+  file.path(qc_dir, "Step6_alcohol_missingness_audit_by_cycle.csv")
+)
+
+write_csv(
+  cross_tab,
+  file.path(qc_dir, "Step6_alcohol_ALQ111_ALQ151_crosstab.csv")
+)
+
+write_csv(
+  raw_label_qc,
+  file.path(qc_dir, "Step6_alcohol_raw_label_qc.csv")
+)
+
+# 7. Export --------------------------------------------------------------------
+
+save_path <- file.path(export_dir, "6.data.rds")
+
+saveRDS(alcohol_combined, save_path)
+
+cat("\nAlcohol data successfully exported to:", save_path, "\n")
+cat("QC files saved to:", qc_dir, "\n")
+cat(
+  "Final Dataset dimensions:",
+  dim(alcohol_combined)[1],
+  "rows and",
+  dim(alcohol_combined)[2],
+  "variables.\n"
+)
+#         - at least 12 drinks in lifetime, but no heavy drinking history
+#     2 = Heavy
+#         - reported heavy drinking history
+#
+# Core variables:
+#   ALQ111:
+#     Had at least 12 alcohol drinks in lifetime
+#     1 = Yes
+#     2 = No
+#     7 = Refused
+#     9 = Don't know
+#
+#   ALQ151:
+#     Ever had 4/5 or more drinks every day
+#     1 = Yes
+#     2 = No
+#     7 = Refused
+#     9 = Don't know
+#
+# Data Cycles:
+#   - 2017-March 2020: P_ALQ
+#   - 2021-2023: ALQ_L
+#
+# Output:
+#   - D:/code/6.data.rds
+################################################################################
+
+# 1. Environment & Libraries ---------------------------------------------------
+
+library(nhanesA)
+library(tidyverse)
+library(stringr)
+
+# 2. Environment ---------------------------------------------------------------
+
+export_dir <- "D:/code"
+
+if (!dir.exists(export_dir)) {
+  dir.create(export_dir, recursive = TRUE)
+}
+
+qc_dir <- file.path(export_dir, "qc_outputs")
+
+if (!dir.exists(qc_dir)) {
+  dir.create(qc_dir, recursive = TRUE)
+}
+
+# 3. Helper Functions ----------------------------------------------------------
+
+clean_yes_no_code <- function(x) {
+  
+  x_chr <- as.character(x)
+  x_chr <- str_trim(x_chr)
+  x_low <- str_to_lower(x_chr)
+  
+  case_when(
+    is.na(x_chr) ~ NA_real_,
+    
+    # Numeric codes
+    x_chr == "1" ~ 1,
+    x_chr == "2" ~ 2,
+    
+    # Character labels from nhanesA
+    x_low == "yes" ~ 1,
+    x_low == "no"  ~ 2,
+    
+    # Invalid / missing response labels
+    x_low %in% c(
+      "",
+      ".",
+      "7",
+      "9",
+      "77",
+      "99",
+      "777",
+      "999",
+      "refused",
+      "don't know",
+      "dont know",
+      "missing",
+      "na"
+    ) ~ NA_real_,
+    
+    TRUE ~ NA_real_
+  )
+}
+
+process_alcohol_cycle <- function(table_name, cycle_label) {
+  
+  cat("Processing alcohol data:", cycle_label, "\n")
+  
+  raw_data <- nhanes(table_name)
+  
+  required_vars <- c("SEQN", "ALQ111", "ALQ151")
+  
+  missing_vars <- setdiff(required_vars, names(raw_data))
+  
+  if (length(missing_vars) > 0) {
+    stop(
+      "Missing required alcohol variables in ",
+      table_name,
+      ": ",
+      paste(missing_vars, collapse = ", ")
+    )
+  }
+  
+  cat("\nRaw ALQ111 distribution for", cycle_label, ":\n")
+  print(table(raw_data$ALQ111, useNA = "ifany"))
+  
+  cat("\nRaw ALQ151 distribution for", cycle_label, ":\n")
+  print(table(raw_data$ALQ151, useNA = "ifany"))
+  
+  processed <- raw_data %>%
+    as_tibble() %>%
+    select(all_of(required_vars)) %>%
+    mutate(
+      SEQN = suppressWarnings(as.numeric(SEQN)),
+      
+      ALQ111_raw = ALQ111,
+      ALQ151_raw = ALQ151,
+      
+      ALQ111 = clean_yes_no_code(ALQ111),
+      ALQ151 = clean_yes_no_code(ALQ151),
+      
+      lifetime_12_drinks = case_when(
+        ALQ111 == 1 ~ 1,
+        ALQ111 == 2 ~ 0,
+        TRUE        ~ NA_real_
+      ),
+      
+      heavy_drinking_history = case_when(
+        ALQ151 == 1 ~ 1,
+        ALQ151 == 2 ~ 0,
+        TRUE        ~ NA_real_
+      ),
+      
+      Alcohol_Status = case_when(
+        # Never drinker: fewer than 12 drinks in lifetime
+        ALQ111 == 2 ~ 0,
+        
+        # Heavy drinker: yes to ALQ151
+        ALQ111 == 1 & ALQ151 == 1 ~ 2,
+        
+        # Non-heavy ever drinker: >=12 drinks lifetime, no to ALQ151
+        ALQ111 == 1 & ALQ151 == 2 ~ 1,
+        
+        TRUE ~ NA_real_
+      ),
+      
+      Alcohol_Label = factor(
+        Alcohol_Status,
+        levels = c(0, 1, 2),
+        labels = c(
+          "Never",
+          "Non-heavy ever drinker",
+          "Heavy"
+        )
+      ),
+      
+      # Backward-compatible aliases for older scripts
+      AlcoholCategory = Alcohol_Label,
+      Alcohol_Status_Num = Alcohol_Status,
+      
+      CYCLE = cycle_label
+    )
+  
+  return(processed)
+}
+
+# 4. Process Cycles ------------------------------------------------------------
+
+alq_1720 <- process_alcohol_cycle("P_ALQ", "2017-2020")
+alq_2123 <- process_alcohol_cycle("ALQ_L", "2021-2023")
+
+alcohol_combined <- bind_rows(alq_1720, alq_2123)
+
+# 5. Quality Control -----------------------------------------------------------
+
+cat("\n--- Alcohol Status Distribution by Cycle ---\n")
+
+alcohol_dist_cycle <- alcohol_combined %>%
+  count(CYCLE, Alcohol_Label, name = "n") %>%
+  arrange(CYCLE, Alcohol_Label)
+
+print(alcohol_dist_cycle)
+
+cat("\n--- Alcohol Status Overall Distribution ---\n")
+
+alcohol_dist_overall <- alcohol_combined %>%
+  count(Alcohol_Label, name = "n") %>%
+  arrange(Alcohol_Label)
+
+print(alcohol_dist_overall)
+
+cat("\n--- Missingness Audit ---\n")
+
+missing_audit <- alcohol_combined %>%
+  summarise(
+    n_total = n(),
+    
+    missing_ALQ111 =
+      sum(is.na(ALQ111)),
+    
+    n_lifetime_ever_drinkers =
+      sum(ALQ111 == 1, na.rm = TRUE),
+    
+    missing_ALQ151_among_lifetime_ever_drinkers =
+      sum(ALQ111 == 1 & is.na(ALQ151), na.rm = TRUE),
+    
+    missing_lifetime_12_drinks =
+      sum(is.na(lifetime_12_drinks)),
+    
+    missing_heavy_drinking_history_among_ever_drinkers =
+      sum(ALQ111 == 1 & is.na(heavy_drinking_history), na.rm = TRUE),
+    
+    missing_Alcohol_Status =
+      sum(is.na(Alcohol_Label))
+  )
+
+print(missing_audit)
+
+cat("\n--- Cross-tab: ALQ111 x ALQ151 x Alcohol Status ---\n")
+
+cross_tab <- alcohol_combined %>%
+  count(ALQ111, ALQ151, Alcohol_Label, name = "n") %>%
+  arrange(ALQ111, ALQ151, Alcohol_Label)
+
+print(cross_tab)
+
+cat("\n--- Cycle-specific Missingness Audit ---\n")
+
+missing_audit_cycle <- alcohol_combined %>%
+  group_by(CYCLE) %>%
+  summarise(
+    n_total = n(),
+    
+    missing_ALQ111 =
+      sum(is.na(ALQ111)),
+    
+    n_lifetime_ever_drinkers =
+      sum(ALQ111 == 1, na.rm = TRUE),
+    
+    missing_ALQ151_among_lifetime_ever_drinkers =
+      sum(ALQ111 == 1 & is.na(ALQ151), na.rm = TRUE),
+    
+    missing_Alcohol_Status =
+      sum(is.na(Alcohol_Label)),
+    
+    .groups = "drop"
+  )
+
+print(missing_audit_cycle)
+
+cat("\n--- Raw-label QC after harmonization ---\n")
+
+raw_label_qc <- alcohol_combined %>%
+  count(CYCLE, ALQ111_raw, ALQ151_raw, Alcohol_Label, name = "n") %>%
+  arrange(CYCLE, ALQ111_raw, ALQ151_raw, Alcohol_Label)
+
+print(raw_label_qc)
+
+# 6. Save QC Outputs -----------------------------------------------------------
+
+write_csv(
+  alcohol_dist_cycle,
+  file.path(qc_dir, "Step6_alcohol_status_distribution_by_cycle.csv")
+)
+
+write_csv(
+  alcohol_dist_overall,
+  file.path(qc_dir, "Step6_alcohol_status_distribution_overall.csv")
+)
+
+write_csv(
+  missing_audit,
+  file.path(qc_dir, "Step6_alcohol_missingness_audit.csv")
+)
+
+write_csv(
+  missing_audit_cycle,
+  file.path(qc_dir, "Step6_alcohol_missingness_audit_by_cycle.csv")
+)
+
+write_csv(
+  cross_tab,
+  file.path(qc_dir, "Step6_alcohol_ALQ111_ALQ151_crosstab.csv")
+)
+
+write_csv(
+  raw_label_qc,
+  file.path(qc_dir, "Step6_alcohol_raw_label_qc.csv")
+)
+
+# 7. Export --------------------------------------------------------------------
+
+save_path <- file.path(export_dir, "6.data.rds")
+
+saveRDS(alcohol_combined, save_path)
+
+cat("\nAlcohol data successfully exported to:", save_path, "\n")
+cat("QC files saved to:", qc_dir, "\n")
+cat(
+  "Final Dataset dimensions:",
+  dim(alcohol_combined)[1],
+  "rows and",
+  dim(alcohol_combined)[2],
+  "variables.\n"
+)
+
+################################################################################
+# Script Name: 7. Covariate Processing - Diabetes Status
+# Purpose:
+#   Harmonize NHANES diabetes / borderline diabetes status across 2017-2023 cycles.
+#
+# Manuscript-consistent definition:
+#   Diabetes or borderline diabetes was defined using self-reported physician
+#   diagnosis from DIQ010.
+#
+# Core variable:
+#   DIQ010:
+#     Doctor told you have diabetes
+#     1 = Yes
+#     2 = No
+#     3 = Borderline
+#     7 = Refused
+#     9 = Don't know
+#
+# Analytic variable:
+#   diabetes_or_prediabetes:
+#     0 = No
+#     1 = Yes or borderline diabetes
+#
+# Data Cycles:
+#   - 2017-March 2020: P_DIQ
+#   - 2021-2023: DIQ_L
+#
+# Output:
+#   - D:/code/7.data.rds
+################################################################################
+
+# 1. Environment & Libraries ---------------------------------------------------
+
+library(nhanesA)
+library(tidyverse)
+library(stringr)
+
+# 2. Environment ---------------------------------------------------------------
+
+export_dir <- "D:/code"
+
+if (!dir.exists(export_dir)) {
+  dir.create(export_dir, recursive = TRUE)
+}
+
+qc_dir <- file.path(export_dir, "qc_outputs")
+
+if (!dir.exists(qc_dir)) {
+  dir.create(qc_dir, recursive = TRUE)
+}
+
+# 3. Helper Functions ----------------------------------------------------------
+
+clean_diq010_code <- function(x) {
+  
+  x_chr <- as.character(x)
+  x_chr <- str_trim(x_chr)
+  x_low <- str_to_lower(x_chr)
+  
+  case_when(
+    is.na(x_chr) ~ NA_real_,
+    
+    # Numeric codes
+    x_chr == "1" ~ 1,
+    x_chr == "2" ~ 2,
+    x_chr == "3" ~ 3,
+    
+    # Character labels from nhanesA
+    x_low == "yes" ~ 1,
+    x_low == "no" ~ 2,
+    str_detect(x_low, "borderline") ~ 3,
+    
+    # Invalid / missing response labels
+    x_low %in% c(
+      "",
+      ".",
+      "7",
+      "9",
+      "77",
+      "99",
+      "refused",
+      "don't know",
+      "dont know",
+      "missing",
+      "na"
+    ) ~ NA_real_,
+    
+    TRUE ~ NA_real_
+  )
+}
+
+process_diabetes_cycle <- function(table_name, cycle_label) {
+  
+  cat("Processing diabetes data:", cycle_label, "\n")
+  
+  raw_data <- nhanes(table_name)
+  
+  required_vars <- c("SEQN", "DIQ010")
+  
+  missing_vars <- setdiff(required_vars, names(raw_data))
+  
+  if (length(missing_vars) > 0) {
+    stop(
+      "Missing required diabetes variables in ",
+      table_name,
+      ": ",
+      paste(missing_vars, collapse = ", ")
+    )
+  }
+  
+  cat("\nRaw DIQ010 distribution for", cycle_label, ":\n")
+  print(table(raw_data$DIQ010, useNA = "ifany"))
+  
+  processed <- raw_data %>%
+    as_tibble() %>%
+    select(all_of(required_vars)) %>%
+    mutate(
+      SEQN = suppressWarnings(as.numeric(SEQN)),
+      
+      DIQ010_raw = DIQ010,
+      
+      DIQ010 = clean_diq010_code(DIQ010),
+      
+      diabetes_status_3level = case_when(
+        DIQ010 == 2 ~ 0, # No
+        DIQ010 == 3 ~ 1, # Borderline
+        DIQ010 == 1 ~ 2, # Yes
+        TRUE        ~ NA_real_
+      ),
+      
+      diabetes_status_3level_label = factor(
+        diabetes_status_3level,
+        levels = c(0, 1, 2),
+        labels = c(
+          "No",
+          "Borderline",
+          "Yes"
+        )
+      ),
+      
+      diabetes_or_prediabetes = case_when(
+        DIQ010 == 2 ~ 0,
+        DIQ010 %in% c(1, 3) ~ 1,
+        TRUE ~ NA_real_
+      ),
+      
+      diabetes_or_prediabetes_label = factor(
+        diabetes_or_prediabetes,
+        levels = c(0, 1),
+        labels = c(
+          "No",
+          "Yes/Borderline"
+        )
+      ),
+      
+      # Backward-compatible names used in previous scripts
+      diabetes_status = diabetes_or_prediabetes,
+      diabetes_label = diabetes_or_prediabetes_label,
+      
+      CYCLE = cycle_label
+    )
+  
+  return(processed)
+}
+
+# 4. Process Cycles ------------------------------------------------------------
+
+diq_1720 <- process_diabetes_cycle("P_DIQ", "2017-2020")
+diq_2123 <- process_diabetes_cycle("DIQ_L", "2021-2023")
+
+diabetes_combined <- bind_rows(diq_1720, diq_2123)
+
+# 5. Quality Control -----------------------------------------------------------
+
+cat("\n--- Diabetes / Prediabetes Distribution by Cycle ---\n")
+
+diabetes_dist_cycle <- diabetes_combined %>%
+  count(CYCLE, diabetes_or_prediabetes_label, name = "n") %>%
+  arrange(CYCLE, diabetes_or_prediabetes_label)
+
+print(diabetes_dist_cycle)
+
+cat("\n--- Diabetes / Prediabetes Overall Distribution ---\n")
+
+diabetes_dist_overall <- diabetes_combined %>%
+  count(diabetes_or_prediabetes_label, name = "n") %>%
+  arrange(diabetes_or_prediabetes_label)
+
+print(diabetes_dist_overall)
+
+cat("\n--- 3-Level Diabetes Status Distribution ---\n")
+
+diabetes_3level_dist <- diabetes_combined %>%
+  count(diabetes_status_3level_label, name = "n") %>%
+  arrange(diabetes_status_3level_label)
+
+print(diabetes_3level_dist)
+
+cat("\n--- Missingness Audit ---\n")
+
+missing_audit <- diabetes_combined %>%
+  summarise(
+    n_total = n(),
+    
+    missing_DIQ010 =
+      sum(is.na(DIQ010)),
+    
+    missing_diabetes_or_prediabetes =
+      sum(is.na(diabetes_or_prediabetes_label)),
+    
+    n_no_diabetes =
+      sum(diabetes_or_prediabetes == 0, na.rm = TRUE),
+    
+    n_diabetes_or_prediabetes =
+      sum(diabetes_or_prediabetes == 1, na.rm = TRUE),
+    
+    n_borderline =
+      sum(diabetes_status_3level == 1, na.rm = TRUE),
+    
+    n_diabetes_yes =
+      sum(diabetes_status_3level == 2, na.rm = TRUE)
+  )
+
+print(missing_audit)
+
+cat("\n--- Cycle-specific Missingness Audit ---\n")
+
+missing_audit_cycle <- diabetes_combined %>%
+  group_by(CYCLE) %>%
+  summarise(
+    n_total = n(),
+    
+    missing_DIQ010 =
+      sum(is.na(DIQ010)),
+    
+    n_no_diabetes =
+      sum(diabetes_or_prediabetes == 0, na.rm = TRUE),
+    
+    n_diabetes_or_prediabetes =
+      sum(diabetes_or_prediabetes == 1, na.rm = TRUE),
+    
+    n_borderline =
+      sum(diabetes_status_3level == 1, na.rm = TRUE),
+    
+    n_diabetes_yes =
+      sum(diabetes_status_3level == 2, na.rm = TRUE),
+    
+    missing_diabetes_or_prediabetes =
+      sum(is.na(diabetes_or_prediabetes_label)),
+    
+    .groups = "drop"
+  )
+
+print(missing_audit_cycle)
+
+cat("\n--- Raw-label QC after harmonization ---\n")
+
+raw_label_qc <- diabetes_combined %>%
+  count(CYCLE, DIQ010_raw, diabetes_status_3level_label,
+        diabetes_or_prediabetes_label, name = "n") %>%
+  arrange(CYCLE, DIQ010_raw, diabetes_status_3level_label)
+
+print(raw_label_qc)
+
+# 6. Save QC Outputs -----------------------------------------------------------
+
+write_csv(
+  diabetes_dist_cycle,
+  file.path(qc_dir, "Step7_diabetes_prediabetes_distribution_by_cycle.csv")
+)
+
+write_csv(
+  diabetes_dist_overall,
+  file.path(qc_dir, "Step7_diabetes_prediabetes_distribution_overall.csv")
+)
+
+write_csv(
+  diabetes_3level_dist,
+  file.path(qc_dir, "Step7_diabetes_3level_distribution.csv")
+)
+
+write_csv(
+  missing_audit,
+  file.path(qc_dir, "Step7_diabetes_missingness_audit.csv")
+)
+
+write_csv(
+  missing_audit_cycle,
+  file.path(qc_dir, "Step7_diabetes_missingness_audit_by_cycle.csv")
+)
+
+write_csv(
+  raw_label_qc,
+  file.path(qc_dir, "Step7_diabetes_raw_label_qc.csv")
+)
+
+# 7. Export --------------------------------------------------------------------
+
+save_path <- file.path(export_dir, "7.data.rds")
+
+saveRDS(diabetes_combined, save_path)
+
+cat("\nDiabetes data successfully exported to:", save_path, "\n")
+cat("QC files saved to:", qc_dir, "\n")
+cat(
+  "Final Dataset dimensions:",
+  dim(diabetes_combined)[1],
+  "rows and",
+  dim(diabetes_combined)[2],
+  "variables.\n"
+)
+
+################################################################################
+# Script Name: 8. Covariate Processing - Hypertension Status
+# Purpose:
+#   Harmonize NHANES hypertension status across 2017-2023 cycles.
+#
+# Manuscript-consistent definition:
+#   Hypertension was defined using self-reported physician diagnosis from BPQ020.
+#
+# Core variable:
+#   BPQ020:
+#     Ever told you had high blood pressure
+#     1 = Yes
+#     2 = No
+#     7 = Refused
+#     9 = Don't know
+#
+# Analytic variable:
+#   htn_status:
+#     0 = No
+#     1 = Yes
+#
+# Data Cycles:
+#   - 2017-March 2020: P_BPQ
+#   - 2021-2023: BPQ_L
+#
+# Output:
+#   - D:/code/8.data.rds
+################################################################################
+
+# 1. Environment & Libraries ---------------------------------------------------
+
+library(nhanesA)
+library(tidyverse)
+library(stringr)
+
+# 2. Environment ---------------------------------------------------------------
+
+export_dir <- "D:/code"
+
+if (!dir.exists(export_dir)) {
+  dir.create(export_dir, recursive = TRUE)
+}
+
+qc_dir <- file.path(export_dir, "qc_outputs")
+
+if (!dir.exists(qc_dir)) {
+  dir.create(qc_dir, recursive = TRUE)
+}
+
+# 3. Helper Functions ----------------------------------------------------------
+
+clean_bpq020_code <- function(x) {
+  
+  x_chr <- as.character(x)
+  x_chr <- str_trim(x_chr)
+  x_low <- str_to_lower(x_chr)
+  
+  case_when(
+    is.na(x_chr) ~ NA_real_,
+    
+    # Numeric codes
+    x_chr == "1" ~ 1,
+    x_chr == "2" ~ 2,
+    
+    # Character labels from nhanesA
+    x_low == "yes" ~ 1,
+    x_low == "no"  ~ 2,
+    
+    # Invalid / missing response labels
+    x_low %in% c(
+      "",
+      ".",
+      "7",
+      "9",
+      "77",
+      "99",
+      "refused",
+      "don't know",
+      "dont know",
+      "missing",
+      "na"
+    ) ~ NA_real_,
+    
+    TRUE ~ NA_real_
+  )
+}
+
+process_hypertension_cycle <- function(table_name, cycle_label) {
+  
+  cat("Processing hypertension data:", cycle_label, "\n")
+  
+  raw_data <- nhanes(table_name)
+  
+  required_vars <- c("SEQN", "BPQ020")
+  
+  missing_vars <- setdiff(required_vars, names(raw_data))
+  
+  if (length(missing_vars) > 0) {
+    stop(
+      "Missing required hypertension variables in ",
+      table_name,
+      ": ",
+      paste(missing_vars, collapse = ", ")
+    )
+  }
+  
+  cat("\nRaw BPQ020 distribution for", cycle_label, ":\n")
+  print(table(raw_data$BPQ020, useNA = "ifany"))
+  
+  processed <- raw_data %>%
+    as_tibble() %>%
+    select(all_of(required_vars)) %>%
+    mutate(
+      SEQN = suppressWarnings(as.numeric(SEQN)),
+      
+      BPQ020_raw = BPQ020,
+      
+      BPQ020 = clean_bpq020_code(BPQ020),
+      
+      htn_status = case_when(
+        BPQ020 == 1 ~ 1,
+        BPQ020 == 2 ~ 0,
+        TRUE        ~ NA_real_
+      ),
+      
+      htn_status_label = factor(
+        htn_status,
+        levels = c(0, 1),
+        labels = c(
+          "No",
+          "Yes"
+        )
+      ),
+      
+      # Backward-compatible aliases for older scripts
+      hypertension_status = htn_status,
+      hypertension_label = htn_status_label,
+      
+      CYCLE = cycle_label
+    )
+  
+  return(processed)
+}
+
+# 4. Process Cycles ------------------------------------------------------------
+
+htn_1720 <- process_hypertension_cycle("P_BPQ", "2017-2020")
+htn_2123 <- process_hypertension_cycle("BPQ_L", "2021-2023")
+
+htn_combined <- bind_rows(htn_1720, htn_2123)
+
+# 5. Quality Control -----------------------------------------------------------
+
+cat("\n--- Hypertension Distribution by Cycle ---\n")
+
+htn_dist_cycle <- htn_combined %>%
+  count(CYCLE, htn_status_label, name = "n") %>%
+  arrange(CYCLE, htn_status_label)
+
+print(htn_dist_cycle)
+
+cat("\n--- Hypertension Overall Distribution ---\n")
+
+htn_dist_overall <- htn_combined %>%
+  count(htn_status_label, name = "n") %>%
+  arrange(htn_status_label)
+
+print(htn_dist_overall)
+
+cat("\n--- Missingness Audit ---\n")
+
+missing_audit <- htn_combined %>%
+  summarise(
+    n_total = n(),
+    
+    missing_BPQ020 =
+      sum(is.na(BPQ020)),
+    
+    missing_htn_status =
+      sum(is.na(htn_status_label)),
+    
+    n_no_hypertension =
+      sum(htn_status == 0, na.rm = TRUE),
+    
+    n_hypertension =
+      sum(htn_status == 1, na.rm = TRUE)
+  )
+
+print(missing_audit)
+
+cat("\n--- Cycle-specific Missingness Audit ---\n")
+
+missing_audit_cycle <- htn_combined %>%
+  group_by(CYCLE) %>%
+  summarise(
+    n_total = n(),
+    
+    missing_BPQ020 =
+      sum(is.na(BPQ020)),
+    
+    n_no_hypertension =
+      sum(htn_status == 0, na.rm = TRUE),
+    
+    n_hypertension =
+      sum(htn_status == 1, na.rm = TRUE),
+    
+    missing_htn_status =
+      sum(is.na(htn_status_label)),
+    
+    .groups = "drop"
+  )
+
+print(missing_audit_cycle)
+
+cat("\n--- Raw-label QC after harmonization ---\n")
+
+raw_label_qc <- htn_combined %>%
+  count(
+    CYCLE,
+    BPQ020_raw,
+    htn_status_label,
+    name = "n"
+  ) %>%
+  arrange(CYCLE, BPQ020_raw, htn_status_label)
+
+print(raw_label_qc)
+
+# 6. Save QC Outputs -----------------------------------------------------------
+
+write_csv(
+  htn_dist_cycle,
+  file.path(qc_dir, "Step8_hypertension_distribution_by_cycle.csv")
+)
+
+write_csv(
+  htn_dist_overall,
+  file.path(qc_dir, "Step8_hypertension_distribution_overall.csv")
+)
+
+write_csv(
+  missing_audit,
+  file.path(qc_dir, "Step8_hypertension_missingness_audit.csv")
+)
+
+write_csv(
+  missing_audit_cycle,
+  file.path(qc_dir, "Step8_hypertension_missingness_audit_by_cycle.csv")
+)
+
+write_csv(
+  raw_label_qc,
+  file.path(qc_dir, "Step8_hypertension_raw_label_qc.csv")
+)
+
+# 7. Export --------------------------------------------------------------------
+
+save_path <- file.path(export_dir, "8.data.rds")
+
+saveRDS(htn_combined, save_path)
+
+cat("\nHypertension data successfully exported to:", save_path, "\n")
+cat("QC files saved to:", qc_dir, "\n")
+cat(
+  "Final Dataset dimensions:",
+  dim(htn_combined)[1],
+  "rows and",
+  dim(htn_combined)[2],
+  "variables.\n"
+)
+
+################################################################################
+# Script Name: 9. Covariate Processing - Work Status
+# Purpose:
+#   Harmonize NHANES work status across 2017-2023 cycles.
+#
+# Manuscript-consistent definition:
+#   Work status was categorized as:
+#     0 = Employed / with a job or business
+#     1 = Not currently working
+#
+# Core variable:
+#   OCD150:
+#     Type of work done last week
+#     1 = Working at a job or business
+#     2 = With a job or business but not at work
+#     3 = Looking for work
+#     4 = Not working at a job or business
+#     7 = Refused
+#     9 = Don't know
+#
+# Data Cycles:
+#   - 2017-March 2020: P_OCQ
+#   - 2021-2023: OCQ_L
+#
+# Output:
+#   - D:/code/9.data.rds
+################################################################################
+
+# 1. Environment & Libraries ---------------------------------------------------
+
+library(nhanesA)
+library(tidyverse)
+library(stringr)
+
+# 2. Environment ---------------------------------------------------------------
+
+export_dir <- "D:/code"
+
+if (!dir.exists(export_dir)) {
+  dir.create(export_dir, recursive = TRUE)
+}
+
+qc_dir <- file.path(export_dir, "qc_outputs")
+
+if (!dir.exists(qc_dir)) {
+  dir.create(qc_dir, recursive = TRUE)
+}
+
+# 3. Helper Functions ----------------------------------------------------------
+
+clean_ocd150_code <- function(x) {
+  
+  x_chr <- as.character(x)
+  x_chr <- str_trim(x_chr)
+  x_low <- str_to_lower(x_chr)
+  
+  case_when(
+    is.na(x_chr) ~ NA_real_,
+    
+    # Numeric codes
+    x_chr == "1" ~ 1,
+    x_chr == "2" ~ 2,
+    x_chr == "3" ~ 3,
+    x_chr == "4" ~ 4,
+    
+    # Character labels from nhanesA
+    str_detect(x_low, "^working at a job|working at a business") ~ 1,
+    str_detect(x_low, "^with a job|with a business") ~ 2,
+    str_detect(x_low, "looking for work") ~ 3,
+    str_detect(x_low, "not working") ~ 4,
+    
+    # Invalid / missing response labels
+    x_low %in% c(
+      "",
+      ".",
+      "7",
+      "9",
+      "77",
+      "99",
+      "refused",
+      "don't know",
+      "dont know",
+      "missing",
+      "na"
+    ) ~ NA_real_,
+    
+    TRUE ~ NA_real_
+  )
+}
+
+process_work_cycle <- function(table_name, cycle_label) {
+  
+  cat("Processing work status data:", cycle_label, "\n")
+  
+  raw_data <- nhanes(table_name)
+  
+  required_vars <- c("SEQN", "OCD150")
+  
+  missing_vars <- setdiff(required_vars, names(raw_data))
+  
+  if (length(missing_vars) > 0) {
+    stop(
+      "Missing required work-status variables in ",
+      table_name,
+      ": ",
+      paste(missing_vars, collapse = ", ")
+    )
+  }
+  
+  cat("\nRaw OCD150 distribution for", cycle_label, ":\n")
+  print(table(raw_data$OCD150, useNA = "ifany"))
+  
+  processed <- raw_data %>%
+    as_tibble() %>%
+    select(all_of(required_vars)) %>%
+    mutate(
+      SEQN = suppressWarnings(as.numeric(SEQN)),
+      
+      OCD150_raw = OCD150,
+      
+      OCD150 = clean_ocd150_code(OCD150),
+      
+      work_status = case_when(
+        OCD150 %in% c(1, 2) ~ 0,
+        OCD150 %in% c(3, 4) ~ 1,
+        TRUE ~ NA_real_
+      ),
+      
+      work_status_label = factor(
+        work_status,
+        levels = c(0, 1),
+        labels = c(
+          "Employed/with job",
+          "Not currently working"
+        )
+      ),
+      
+      # Backward-compatible aliases for previous scripts
+      employment_status = work_status,
+      employment_label = work_status_label,
+      
+      CYCLE = cycle_label
+    )
+  
+  return(processed)
+}
+
+# 4. Process Cycles ------------------------------------------------------------
+
+ocq_1720 <- process_work_cycle("P_OCQ", "2017-2020")
+ocq_2123 <- process_work_cycle("OCQ_L", "2021-2023")
+
+work_combined <- bind_rows(ocq_1720, ocq_2123)
+
+# 5. Quality Control -----------------------------------------------------------
+
+cat("\n--- Work Status Distribution by Cycle ---\n")
+
+work_dist_cycle <- work_combined %>%
+  count(CYCLE, work_status_label, name = "n") %>%
+  arrange(CYCLE, work_status_label)
+
+print(work_dist_cycle)
+
+cat("\n--- Work Status Overall Distribution ---\n")
+
+work_dist_overall <- work_combined %>%
+  count(work_status_label, name = "n") %>%
+  arrange(work_status_label)
+
+print(work_dist_overall)
+
+cat("\n--- Detailed Raw Work Status Distribution ---\n")
+
+work_raw_dist <- work_combined %>%
+  count(CYCLE, OCD150_raw, work_status_label, name = "n") %>%
+  arrange(CYCLE, OCD150_raw, work_status_label)
+
+print(work_raw_dist)
+
+cat("\n--- Missingness Audit ---\n")
+
+missing_audit <- work_combined %>%
+  summarise(
+    n_total = n(),
+    
+    missing_OCD150 =
+      sum(is.na(OCD150)),
+    
+    missing_work_status =
+      sum(is.na(work_status_label)),
+    
+    n_employed_or_with_job =
+      sum(work_status == 0, na.rm = TRUE),
+    
+    n_not_currently_working =
+      sum(work_status == 1, na.rm = TRUE)
+  )
+
+print(missing_audit)
+
+cat("\n--- Cycle-specific Missingness Audit ---\n")
+
+missing_audit_cycle <- work_combined %>%
+  group_by(CYCLE) %>%
+  summarise(
+    n_total = n(),
+    
+    missing_OCD150 =
+      sum(is.na(OCD150)),
+    
+    n_employed_or_with_job =
+      sum(work_status == 0, na.rm = TRUE),
+    
+    n_not_currently_working =
+      sum(work_status == 1, na.rm = TRUE),
+    
+    missing_work_status =
+      sum(is.na(work_status_label)),
+    
+    .groups = "drop"
+  )
+
+print(missing_audit_cycle)
+
+# 6. Save QC Outputs -----------------------------------------------------------
+
+write_csv(
+  work_dist_cycle,
+  file.path(qc_dir, "Step9_work_status_distribution_by_cycle.csv")
+)
+
+write_csv(
+  work_dist_overall,
+  file.path(qc_dir, "Step9_work_status_distribution_overall.csv")
+)
+
+write_csv(
+  work_raw_dist,
+  file.path(qc_dir, "Step9_work_status_raw_label_qc.csv")
+)
+
+write_csv(
+  missing_audit,
+  file.path(qc_dir, "Step9_work_status_missingness_audit.csv")
+)
+
+write_csv(
+  missing_audit_cycle,
+  file.path(qc_dir, "Step9_work_status_missingness_audit_by_cycle.csv")
+)
+
+# 7. Export --------------------------------------------------------------------
+
+save_path <- file.path(export_dir, "9.data.rds")
+
+saveRDS(work_combined, save_path)
+
+cat("\nWork status data successfully exported to:", save_path, "\n")
+cat("QC files saved to:", qc_dir, "\n")
+cat(
+  "Final Dataset dimensions:",
+  dim(work_combined)[1],
+  "rows and",
+  dim(work_combined)[2],
+  "variables.\n"
+)
+
+################################################################################
+# Script Name: 10. Physical Activity & Sedentary Behavior
+# Purpose:
+#   Harmonize NHANES recreational physical activity and sedentary behavior
+#   across 2017-2023 cycles.
+#
+# Manuscript-consistent variables:
+#   - MET_total: recreational MET-min/week
+#   - MET_cat_label: Low / Moderate / High
+#   - sedentary_min: sedentary minutes/day
+#   - sedentary_cat_label: <6h / 6-8h / >8h
+#
+# Cleaning principles:
+#   - Refused / Don't know / missing codes are treated as missing
+#   - MET_total is truncated at 30,000 MET-min/week
+#   - Sedentary time is truncated at 960 min/day (16 h/day)
+#   - Truncation is performed before categorization
+#   - Participants are not deleted in this step
+#
+# Data Cycles:
+#   - 2017-March 2020: P_PAQ
+#   - 2021-2023: PAQ_L
+#
+# Output:
+#   - D:/code/10.data.rds
+################################################################################
+
+# 1. Libraries -----------------------------------------------------------------
+
+library(nhanesA)
+library(tidyverse)
+library(stringr)
+
+# 2. Environment ---------------------------------------------------------------
+
+export_dir <- "D:/code"
+
+if (!dir.exists(export_dir)) {
+  dir.create(export_dir, recursive = TRUE)
+}
+
+qc_dir <- file.path(export_dir, "qc_outputs")
+
+if (!dir.exists(qc_dir)) {
+  dir.create(qc_dir, recursive = TRUE)
+}
+
+# 3. Helper Functions ----------------------------------------------------------
+
+clean_numeric_code <- function(x) {
+  
+  x_chr <- as.character(x)
+  x_chr <- str_trim(x_chr)
+  x_low <- str_to_lower(x_chr)
+  
+  case_when(
+    is.na(x_chr) ~ NA_real_,
+    
+    x_low %in% c(
+      "",
+      ".",
+      "7",
+      "9",
+      "77",
+      "99",
+      "777",
+      "999",
+      "7777",
+      "9999",
+      "77777",
+      "99999",
+      "refused",
+      "don't know",
+      "dont know",
+      "missing",
+      "na"
+    ) ~ NA_real_,
+    
+    TRUE ~ suppressWarnings(as.numeric(x_chr))
+  )
+}
+
+clean_yes_no_code <- function(x) {
+  
+  x_chr <- as.character(x)
+  x_chr <- str_trim(x_chr)
+  x_low <- str_to_lower(x_chr)
+  
+  case_when(
+    is.na(x_chr) ~ NA_real_,
+    
+    x_chr == "1" ~ 1,
+    x_chr == "2" ~ 2,
+    
+    x_low == "yes" ~ 1,
+    x_low == "no"  ~ 2,
+    
+    x_low %in% c(
+      "",
+      ".",
+      "7",
+      "9",
+      "77",
+      "99",
+      "refused",
+      "don't know",
+      "dont know",
+      "missing",
+      "na"
+    ) ~ NA_real_,
+    
+    TRUE ~ NA_real_
+  )
+}
+
+clean_frequency_unit <- function(x) {
+  
+  x_chr <- as.character(x)
+  x_chr <- str_trim(x_chr)
+  x_low <- str_to_lower(x_chr)
+  
+  case_when(
+    is.na(x_chr) ~ NA_character_,
+    
+    x_low %in% c(
+      "",
+      ".",
+      "7",
+      "9",
+      "77",
+      "99",
+      "refused",
+      "don't know",
+      "dont know",
+      "missing",
+      "na"
+    ) ~ NA_character_,
+    
+    x_low %in% c("day", "d", "1") ~ "Day",
+    x_low %in% c("week", "w", "2") ~ "Week",
+    x_low %in% c("month", "m", "3") ~ "Month",
+    x_low %in% c("year", "y", "4") ~ "Year",
+    
+    str_detect(x_low, "day") ~ "Day",
+    str_detect(x_low, "week") ~ "Week",
+    str_detect(x_low, "month") ~ "Month",
+    str_detect(x_low, "year") ~ "Year",
+    
+    TRUE ~ NA_character_
+  )
+}
+
+unit_to_week_multiplier <- function(unit_chr) {
+  case_when(
+    unit_chr == "Day"   ~ 7,
+    unit_chr == "Week"  ~ 1,
+    unit_chr == "Month" ~ 1 / 4.345,
+    unit_chr == "Year"  ~ 1 / 52.18,
+    TRUE                ~ NA_real_
+  )
+}
+
+truncate_upper <- function(x, upper) {
+  case_when(
+    is.na(x) ~ NA_real_,
+    x > upper ~ upper,
+    TRUE ~ x
+  )
+}
+
+# 4. Data Acquisition ----------------------------------------------------------
+
+cat("Downloading NHANES physical activity data...\n")
+
+p_paq <- nhanes("P_PAQ")
+paq_l <- nhanes("PAQ_L")
+
+# 5. Process 2017-March 2020 ---------------------------------------------------
+
+process_paq_1720 <- function(raw_data) {
+  
+  cat("Processing PAQ cycle: 2017-2020\n")
+  
+  required_vars <- c(
+    "SEQN",
+    "PAQ650", "PAQ655", "PAD660",
+    "PAQ665", "PAQ670", "PAD675",
+    "PAD680"
+  )
+  
+  missing_vars <- setdiff(required_vars, names(raw_data))
+  
+  if (length(missing_vars) > 0) {
+    stop(
+      "Missing required PAQ variables in 2017-2020: ",
+      paste(missing_vars, collapse = ", ")
+    )
+  }
+  
+  cat("\nRaw PAQ650 distribution, 2017-2020:\n")
+  print(table(raw_data$PAQ650, useNA = "ifany"))
+  
+  cat("\nRaw PAQ665 distribution, 2017-2020:\n")
+  print(table(raw_data$PAQ665, useNA = "ifany"))
+  
+  processed <- raw_data %>%
+    as_tibble() %>%
+    select(all_of(required_vars)) %>%
+    mutate(
+      SEQN = clean_numeric_code(SEQN),
+      
+      PAQ650_raw = PAQ650,
+      PAQ655_raw = PAQ655,
+      PAD660_raw = PAD660,
+      
+      PAQ665_raw = PAQ665,
+      PAQ670_raw = PAQ670,
+      PAD675_raw = PAD675,
+      
+      PAD680_raw = PAD680,
+      
+      PAQ650 = clean_yes_no_code(PAQ650),
+      PAQ665 = clean_yes_no_code(PAQ665),
+      
+      PAQ655 = clean_numeric_code(PAQ655),
+      PAD660 = clean_numeric_code(PAD660),
+      
+      PAQ670 = clean_numeric_code(PAQ670),
+      PAD675 = clean_numeric_code(PAD675),
+      
+      sedentary_min_raw = clean_numeric_code(PAD680),
+      
+      MET_high_raw = case_when(
+        PAQ650 == 2 ~ 0,
+        PAQ650 == 1 & !is.na(PAQ655) & !is.na(PAD660) ~
+          PAQ655 * PAD660 * 8,
+        TRUE ~ NA_real_
+      ),
+      
+      MET_mod_raw = case_when(
+        PAQ665 == 2 ~ 0,
+        PAQ665 == 1 & !is.na(PAQ670) & !is.na(PAD675) ~
+          PAQ670 * PAD675 * 4,
+        TRUE ~ NA_real_
+      ),
+      
+      MET_total_raw = case_when(
+        !is.na(MET_high_raw) & !is.na(MET_mod_raw) ~
+          MET_high_raw + MET_mod_raw,
+        !is.na(MET_high_raw) & is.na(MET_mod_raw) ~
+          MET_high_raw,
+        is.na(MET_high_raw) & !is.na(MET_mod_raw) ~
+          MET_mod_raw,
+        TRUE ~ NA_real_
+      ),
+      
+      CYCLE = "2017-2020"
+    )
+  
+  return(processed)
+}
+
+# 6. Process 2021-2023 ---------------------------------------------------------
+
+process_paq_2123 <- function(raw_data) {
+  
+  cat("Processing PAQ cycle: 2021-2023\n")
+  
+  required_vars <- c(
+    "SEQN",
+    "PAD790Q", "PAD790U", "PAD800",
+    "PAD810Q", "PAD810U", "PAD820",
+    "PAD680"
+  )
+  
+  missing_vars <- setdiff(required_vars, names(raw_data))
+  
+  if (length(missing_vars) > 0) {
+    stop(
+      "Missing required PAQ variables in 2021-2023: ",
+      paste(missing_vars, collapse = ", ")
+    )
+  }
+  
+  cat("\nRaw PAD790U distribution, 2021-2023:\n")
+  print(table(raw_data$PAD790U, useNA = "ifany"))
+  
+  cat("\nRaw PAD810U distribution, 2021-2023:\n")
+  print(table(raw_data$PAD810U, useNA = "ifany"))
+  
+  processed <- raw_data %>%
+    as_tibble() %>%
+    select(all_of(required_vars)) %>%
+    mutate(
+      SEQN = clean_numeric_code(SEQN),
+      
+      PAD790Q_raw = PAD790Q,
+      PAD790U_raw = PAD790U,
+      PAD800_raw  = PAD800,
+      
+      PAD810Q_raw = PAD810Q,
+      PAD810U_raw = PAD810U,
+      PAD820_raw  = PAD820,
+      
+      PAD680_raw = PAD680,
+      
+      PAD790Q = clean_numeric_code(PAD790Q),
+      PAD800  = clean_numeric_code(PAD800),
+      
+      PAD810Q = clean_numeric_code(PAD810Q),
+      PAD820  = clean_numeric_code(PAD820),
+      
+      PAD790U_clean = clean_frequency_unit(PAD790U),
+      PAD810U_clean = clean_frequency_unit(PAD810U),
+      
+      u_mod = unit_to_week_multiplier(PAD790U_clean),
+      u_high = unit_to_week_multiplier(PAD810U_clean),
+      
+      MET_mod_raw = case_when(
+        !is.na(PAD790Q) & !is.na(u_mod) & !is.na(PAD800) ~
+          PAD790Q * u_mod * PAD800 * 4,
+        TRUE ~ NA_real_
+      ),
+      
+      MET_high_raw = case_when(
+        !is.na(PAD810Q) & !is.na(u_high) & !is.na(PAD820) ~
+          PAD810Q * u_high * PAD820 * 8,
+        TRUE ~ NA_real_
+      ),
+      
+      MET_total_raw = case_when(
+        !is.na(MET_high_raw) & !is.na(MET_mod_raw) ~
+          MET_high_raw + MET_mod_raw,
+        !is.na(MET_high_raw) & is.na(MET_mod_raw) ~
+          MET_high_raw,
+        is.na(MET_high_raw) & !is.na(MET_mod_raw) ~
+          MET_mod_raw,
+        TRUE ~ NA_real_
+      ),
+      
+      sedentary_min_raw = clean_numeric_code(PAD680),
+      
+      CYCLE = "2021-2023"
+    )
+  
+  return(processed)
+}
+
+# 7. Process and Merge ---------------------------------------------------------
+
+df_1720 <- process_paq_1720(p_paq)
+df_2123 <- process_paq_2123(paq_l)
+
+pa_combined <- bind_rows(df_1720, df_2123)
+
+# 8. Truncation and Categorization --------------------------------------------
+
+final_data <- pa_combined %>%
+  mutate(
+    MET_total_truncated_flag = case_when(
+      is.na(MET_total_raw) ~ NA_real_,
+      MET_total_raw > 30000 ~ 1,
+      TRUE ~ 0
+    ),
+    
+    sedentary_truncated_flag = case_when(
+      is.na(sedentary_min_raw) ~ NA_real_,
+      sedentary_min_raw > 960 ~ 1,
+      TRUE ~ 0
+    ),
+    
+    MET_total = truncate_upper(MET_total_raw, upper = 30000),
+    sedentary_min = truncate_upper(sedentary_min_raw, upper = 960),
+    
+    MET_cat_label = case_when(
+      is.na(MET_total) ~ NA_character_,
+      MET_total < 600 ~ "Low",
+      MET_total >= 600 & MET_total <= 3000 ~ "Moderate",
+      MET_total > 3000 ~ "High"
+    ),
+    
+    MET_cat_label = factor(
+      MET_cat_label,
+      levels = c("Low", "Moderate", "High")
+    ),
+    
+    MET_cat_num = as.numeric(MET_cat_label),
+    
+    sedentary_cat_label = case_when(
+      is.na(sedentary_min) ~ NA_character_,
+      sedentary_min < 360 ~ "<6h",
+      sedentary_min >= 360 & sedentary_min <= 480 ~ "6-8h",
+      sedentary_min > 480 ~ ">8h"
+    ),
+    
+    sedentary_cat_label = factor(
+      sedentary_cat_label,
+      levels = c("<6h", "6-8h", ">8h")
+    ),
+    
+    sedentary_cat_num = as.numeric(sedentary_cat_label)
+  )
+
+# 9. Quality Control -----------------------------------------------------------
+
+cat("\n--- Physical Activity / Sedentary Basic QC ---\n")
+
+basic_qc <- final_data %>%
+  summarise(
+    n_total = n(),
+    
+    missing_MET_raw = sum(is.na(MET_total_raw)),
+    missing_MET_total = sum(is.na(MET_total)),
+    
+    missing_sedentary_raw = sum(is.na(sedentary_min_raw)),
+    missing_sedentary_min = sum(is.na(sedentary_min)),
+    
+    n_MET_truncated =
+      sum(MET_total_truncated_flag == 1, na.rm = TRUE),
+    
+    n_sedentary_truncated =
+      sum(sedentary_truncated_flag == 1, na.rm = TRUE),
+    
+    min_MET_total =
+      min(MET_total, na.rm = TRUE),
+    
+    max_MET_total =
+      max(MET_total, na.rm = TRUE),
+    
+    min_sedentary_min =
+      min(sedentary_min, na.rm = TRUE),
+    
+    max_sedentary_min =
+      max(sedentary_min, na.rm = TRUE)
+  )
+
+print(basic_qc)
+
+cat("\n--- Continuous Variable Summary ---\n")
+
+continuous_summary <- final_data %>%
+  summarise(
+    MET_mean = mean(MET_total, na.rm = TRUE),
+    MET_median = median(MET_total, na.rm = TRUE),
+    MET_q1 = quantile(MET_total, 0.25, na.rm = TRUE),
+    MET_q3 = quantile(MET_total, 0.75, na.rm = TRUE),
+    
+    sedentary_mean = mean(sedentary_min, na.rm = TRUE),
+    sedentary_median = median(sedentary_min, na.rm = TRUE),
+    sedentary_q1 = quantile(sedentary_min, 0.25, na.rm = TRUE),
+    sedentary_q3 = quantile(sedentary_min, 0.75, na.rm = TRUE)
+  )
+
+print(continuous_summary)
+
+cat("\n--- MET Category Distribution ---\n")
+
+MET_category_dist <- final_data %>%
+  count(MET_cat_label, name = "n")
+
+print(MET_category_dist)
+
+cat("\n--- Sedentary Category Distribution ---\n")
+
+sedentary_category_dist <- final_data %>%
+  count(sedentary_cat_label, name = "n")
+
+print(sedentary_category_dist)
+
+cat("\n--- Cycle-specific QC ---\n")
+
+cycle_qc <- final_data %>%
+  group_by(CYCLE) %>%
+  summarise(
+    n_total = n(),
+    
+    missing_MET_total =
+      sum(is.na(MET_total)),
+    
+    missing_sedentary_min =
+      sum(is.na(sedentary_min)),
+    
+    n_MET_truncated =
+      sum(MET_total_truncated_flag == 1, na.rm = TRUE),
+    
+    n_sedentary_truncated =
+      sum(sedentary_truncated_flag == 1, na.rm = TRUE),
+    
+    median_MET =
+      median(MET_total, na.rm = TRUE),
+    
+    median_sedentary =
+      median(sedentary_min, na.rm = TRUE),
+    
+    .groups = "drop"
+  )
+
+print(cycle_qc)
+# ============================================================
+# Cycle-specific missingness proportion for MET and sedentary
+# ============================================================
+
+PA_missingness_cycle <- final_data %>%
+  group_by(CYCLE) %>%
+  summarise(
+    n_total = n(),
+    
+    MET_missing_n = sum(is.na(MET_total)),
+    MET_missing_percent =
+      round(mean(is.na(MET_total)) * 100, 2),
+    
+    sedentary_missing_n =
+      sum(is.na(sedentary_min)),
+    sedentary_missing_percent =
+      round(mean(is.na(sedentary_min)) * 100, 2),
+    
+    .groups = "drop"
+  )
+
+print(PA_missingness_cycle)
+
+
+write_csv(
+  PA_missingness_cycle,
+  file.path(
+    qc_dir,
+    "Step10_PA_cycle_specific_missingness.csv"
+  )
+)
+
+cat("\n--- Cross-tabulation: MET Category Mapping ---\n")
+
+MET_cross_tab <- final_data %>%
+  count(MET_cat_label, MET_cat_num, name = "n") %>%
+  arrange(MET_cat_label, MET_cat_num)
+
+print(MET_cross_tab)
+
+cat("\n--- Cross-tabulation: Sedentary Category Mapping ---\n")
+
+sedentary_cross_tab <- final_data %>%
+  count(sedentary_cat_label, sedentary_cat_num, name = "n") %>%
+  arrange(sedentary_cat_label, sedentary_cat_num)
+
+print(sedentary_cross_tab)
+
+# 10. Save QC Outputs ----------------------------------------------------------
+
+write_csv(
+  basic_qc,
+  file.path(qc_dir, "Step10_PA_sedentary_basic_qc.csv")
+)
+
+write_csv(
+  continuous_summary,
+  file.path(qc_dir, "Step10_PA_sedentary_continuous_summary.csv")
+)
+
+write_csv(
+  MET_category_dist,
+  file.path(qc_dir, "Step10_MET_category_distribution.csv")
+)
+
+write_csv(
+  sedentary_category_dist,
+  file.path(qc_dir, "Step10_sedentary_category_distribution.csv")
+)
+
+write_csv(
+  cycle_qc,
+  file.path(qc_dir, "Step10_PA_sedentary_cycle_qc.csv")
+)
+
+write_csv(
+  MET_cross_tab,
+  file.path(qc_dir, "Step10_MET_category_mapping_qc.csv")
+)
+
+write_csv(
+  sedentary_cross_tab,
+  file.path(qc_dir, "Step10_sedentary_category_mapping_qc.csv")
+)
+
+# 11. Export -------------------------------------------------------------------
+
+save_path <- file.path(export_dir, "10.data.rds")
+
+saveRDS(final_data, save_path)
+
+cat("\nProcessing complete. Dataset saved to:", save_path, "\n")
+cat("QC files saved to:", qc_dir, "\n")
+cat(
+  "Final Dataset dimensions:",
+  dim(final_data)[1],
+  "rows and",
+  dim(final_data)[2],
+  "variables.\n"
+)
+
+
+
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                
