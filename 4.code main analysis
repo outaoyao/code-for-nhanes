@@ -1,0 +1,3778 @@
+################################################################################
+# STEP15 FINAL — Sleep midpoint RCS
+# Step14 MI + Step13B midpoint + survey Model 4 + 4-knot RCS + Rubin pooling
+################################################################################
+
+rm(list=ls())
+
+library(survey)
+library(rms)
+library(ggplot2)
+library(dplyr)
+library(grid)
+
+if(!requireNamespace("Hmisc",quietly=TRUE)) stop("Package 'Hmisc' is required.")
+options(survey.lonely.psu="adjust")
+
+# ==============================================================================
+# 1. PATHS + INPUT
+# ==============================================================================
+
+root_dir <- "D:/code"
+MI_file <- file.path(root_dir,"14.MI_completed_data_list.rds")
+sleep_file <- file.path(root_dir,"13B.Dataset_MI_Sleep_Rhythm_Index.rds")
+out_dir <- file.path(root_dir,"Step15_MI_Eligible_RCS_exposure_outcome_only")
+fig_dir <- file.path(out_dir,"figures")
+
+dir.create(out_dir,recursive=TRUE,showWarnings=FALSE)
+dir.create(fig_dir,recursive=TRUE,showWarnings=FALSE)
+
+if(!file.exists(MI_file)) stop("Cannot find: ",MI_file)
+if(!file.exists(sleep_file)) stop("Cannot find: ",sleep_file)
+
+analysis_list <- lapply(readRDS(MI_file),as.data.frame)
+M <- length(analysis_list)
+if(M!=20) stop("Expected 20 MI datasets; found ",M)
+
+sleep_dat <- as.data.frame(readRDS(sleep_file))
+sleep_keep <- c("SEQN","midpoint_wd_hour","midpoint_we_hour")
+miss <- setdiff(sleep_keep,names(sleep_dat))
+if(length(miss)>0) stop("Missing Step13B variables: ",paste(miss,collapse=", "))
+sleep_dat <- sleep_dat[,sleep_keep,drop=FALSE]
+if(anyDuplicated(sleep_dat$SEQN)>0) stop("Duplicate SEQN in Step13B dataset.")
+
+cat("\n============================================================\n")
+cat("STEP15 FINAL — SLEEP MIDPOINT MI-POOLED RCS\n")
+cat("============================================================\n")
+cat("MI datasets:",M,"| N per MI:",nrow(analysis_list[[1]]),"\n")
+
+# ==============================================================================
+# 2. MERGE STEP13B MIDPOINT INTO 20 MI DATASETS
+# ==============================================================================
+
+analysis_list <- lapply(seq_len(M),function(m){
+  dat <- analysis_list[[m]]
+  if(anyDuplicated(dat$SEQN)>0) stop("Duplicate SEQN in MI dataset ",m)
+  idx <- match(dat$SEQN,sleep_dat$SEQN)
+  if(anyNA(idx)) stop("SEQN unmatched between Step14 and Step13B in MI dataset ",m)
+  dat$sleep_midpoint_weekday_hours <- sleep_dat$midpoint_wd_hour[idx]
+  dat$sleep_midpoint_weekend_hours <- sleep_dat$midpoint_we_hour[idx]
+  dat
+})
+
+x_wd <- analysis_list[[1]]$sleep_midpoint_weekday_hours
+x_we <- analysis_list[[1]]$sleep_midpoint_weekend_hours
+
+if(anyNA(x_wd) || anyNA(x_we)) stop("Missing midpoint after Step13B merge.")
+
+for(m in 2:M){
+  if(!isTRUE(all.equal(x_wd,analysis_list[[m]]$sleep_midpoint_weekday_hours,check.attributes=FALSE)))
+    stop("Weekday midpoint differs across MI datasets.")
+  if(!isTRUE(all.equal(x_we,analysis_list[[m]]$sleep_midpoint_weekend_hours,check.attributes=FALSE)))
+    stop("Weekend midpoint differs across MI datasets.")
+}
+
+cat("Step13B midpoint merge: PASS\n")
+cat("Weekday range:",paste(round(range(x_wd),2),collapse="–"),"h\n")
+cat("Weekend range:",paste(round(range(x_we),2),collapse="–"),"h\n")
+
+# ==============================================================================
+# 3. OUTCOME + MODEL 4 QC
+# ==============================================================================
+
+outcome <- "Moderate_depression_above"
+
+cov_model4 <- c(
+  "RIDAGEYR","sex","race_ethnicity","education","INDFMPIR",
+  "BMI_value","MET_total","sedentary_min","smoke_status","Alcohol_Status",
+  "diabetes_or_prediabetes","htn_status","work_status"
+)
+
+required <- c(
+  "SEQN","SDMVPSU","SDMVSTRA","mec_adj",outcome,
+  "sleep_midpoint_weekday_hours","sleep_midpoint_weekend_hours",cov_model4
+)
+
+n_each <- sapply(seq_len(M),function(m){
+  dat <- analysis_list[[m]]
+  miss <- setdiff(required,names(dat))
+  if(length(miss)>0) stop("MI ",m," missing: ",paste(miss,collapse=", "))
+  if(anyNA(dat[,required,drop=FALSE])) stop("Residual missingness in MI dataset ",m)
+  if(any(dat$mec_adj<=0)) stop("Invalid weight in MI dataset ",m)
+  nrow(dat)
+})
+
+if(length(unique(n_each))!=1) stop("MI sample sizes differ.")
+
+for(m in seq_len(M)){
+  dat <- analysis_list[[m]]
+  if("PHQ9_depression_above_10" %in% names(dat)){
+    ok <- complete.cases(dat[[outcome]],dat$PHQ9_depression_above_10)
+    if(any(dat[[outcome]][ok]!=dat$PHQ9_depression_above_10[ok]))
+      stop("Outcome mismatch in MI dataset ",m)
+  }
+}
+
+cat("MI / outcome / Model 4 QC: PASS\n")
+
+# ==============================================================================
+# 4. COMMON 4-KNOT RCS
+# ==============================================================================
+
+k_wd <- Hmisc::rcspline.eval(x_wd,nk=4,knots.only=TRUE)
+k_we <- Hmisc::rcspline.eval(x_we,nk=4,knots.only=TRUE)
+
+ktext <- function(x)
+  paste0("c(",paste(format(x,digits=17,scientific=FALSE,trim=TRUE),collapse=","),")")
+
+f_wd <- as.formula(paste0(
+  outcome," ~ rcs(sleep_midpoint_weekday_hours,",ktext(k_wd),") + ",
+  paste(cov_model4,collapse=" + ")
+))
+
+f_we <- as.formula(paste0(
+  outcome," ~ rcs(sleep_midpoint_weekend_hours,",ktext(k_we),") + ",
+  paste(cov_model4,collapse=" + ")
+))
+
+cat("Weekday knots:",paste(round(k_wd,3),collapse=", "),"\n")
+cat("Weekend knots:",paste(round(k_we,3),collapse=", "),"\n")
+
+# ==============================================================================
+# 5. FIT 20 × 2 SURVEY MODELS
+# ==============================================================================
+
+fit_one <- function(dat,formula){
+  des <- svydesign(id=~SDMVPSU,strata=~SDMVSTRA,weights=~mec_adj,nest=TRUE,data=dat)
+  svyglm(formula,design=des,family=quasibinomial())
+}
+
+fits_wd <- lapply(analysis_list,fit_one,formula=f_wd)
+fits_we <- lapply(analysis_list,fit_one,formula=f_we)
+
+n_wd <- sapply(fits_wd,nobs)
+n_we <- sapply(fits_we,nobs)
+
+if(any(n_wd!=n_each) || any(n_we!=n_each)) stop("Model N differs from MI analytic N.")
+cat("All 40 RCS models fitted; model N =",unique(n_wd),"\n")
+
+# ==============================================================================
+# 6. RUBIN POOLING
+# ==============================================================================
+
+pool_models <- function(fits){
+  nm <- names(coef(fits[[1]]))
+  if(!all(vapply(fits,function(f) identical(names(coef(f)),nm),logical(1))))
+    stop("Coefficient structures differ across MI datasets.")
+  Q <- do.call(rbind,lapply(fits,function(f) coef(f)[nm]))
+  U <- lapply(fits,function(f) vcov(f)[nm,nm,drop=FALSE])
+  if(any(!is.finite(Q)) || any(vapply(U,function(x) any(!is.finite(x)),logical(1))))
+    stop("Non-finite coefficient/covariance detected.")
+  qbar <- colMeans(Q); ubar <- Reduce("+",U)/length(fits); B <- cov(Q)
+  list(beta=qbar,V=ubar+(1+1/length(fits))*B,template=fits[[1]])
+}
+
+pool_wd <- pool_models(fits_wd)
+pool_we <- pool_models(fits_we)
+cat("Rubin pooling: PASS\n")
+
+# ==============================================================================
+# 7. PREDICTION
+# ==============================================================================
+
+dat_ref <- analysis_list[[1]]
+mode1 <- function(x){ux <- unique(x); ux[which.max(tabulate(match(x,ux)))]}
+
+ref_cov <- lapply(
+  dat_ref[,cov_model4,drop=FALSE],
+  function(x) if(is.numeric(x)) median(x) else mode1(x)
+)
+
+make_newdata <- function(exposure){
+  nd <- data.frame(x=seq(0,24,length.out=200)); names(nd)[1] <- exposure
+  for(v in cov_model4){
+    if(is.factor(dat_ref[[v]])){
+      nd[[v]] <- factor(rep(as.character(ref_cov[[v]]),nrow(nd)),levels=levels(dat_ref[[v]]))
+    } else nd[[v]] <- rep(ref_cov[[v]],nrow(nd))
+  }
+  nd
+}
+
+predict_rcs <- function(pool,exposure,timing){
+  nd <- make_newdata(exposure)
+  X <- model.matrix(delete.response(terms(pool$template)),data=nd)
+  common <- intersect(colnames(X),names(pool$beta))
+  X <- X[,common,drop=FALSE]; b <- pool$beta[common]; V <- pool$V[common,common,drop=FALSE]
+  lp <- drop(X%*%b); ref <- which.min(lp); D <- sweep(X,2,X[ref,],"-")
+  logOR <- drop(D%*%b); se <- sqrt(pmax(rowSums((D%*%V)*D),0))
+  data.frame(hours=nd[[exposure]],yhat=exp(logOR),
+             lower=exp(logOR-1.96*se),upper=exp(logOR+1.96*se),timing=timing)
+}
+
+plot_wd <- predict_rcs(pool_wd,"sleep_midpoint_weekday_hours","Weekday")
+plot_we <- predict_rcs(pool_we,"sleep_midpoint_weekend_hours","Weekend")
+plot_data <- rbind(plot_wd,plot_we)
+
+write.csv(plot_data,file.path(out_dir,"Step15_MI_Eligible_RCS_plot_data.csv"),row.names=FALSE)
+
+# ==============================================================================
+# 8. OVERALL / NONLINEAR P
+# ==============================================================================
+
+wald_p <- function(pool,exposure,nonlinear=FALSE){
+  idx <- grep(exposure,names(pool$beta),fixed=TRUE)
+  if(nonlinear) idx <- idx[-1]
+  b <- pool$beta[idx]; V <- pool$V[idx,idx,drop=FALSE]
+  stat <- drop(t(b)%*%solve(V,b))
+  pchisq(stat,df=length(b),lower.tail=FALSE)
+}
+
+fmt_p <- function(p) ifelse(p<0.001,"<0.001",sprintf("%.3f",p))
+
+p_table <- data.frame(
+  Timing=c("Weekday","Weekend"),
+  Overall_P=c(
+    wald_p(pool_wd,"sleep_midpoint_weekday_hours"),
+    wald_p(pool_we,"sleep_midpoint_weekend_hours")
+  ),
+  Nonlinear_P=c(
+    wald_p(pool_wd,"sleep_midpoint_weekday_hours",TRUE),
+    wald_p(pool_we,"sleep_midpoint_weekend_hours",TRUE)
+  )
+) %>%
+  mutate(
+    Overall_P_fmt=sapply(Overall_P,fmt_p),
+    Nonlinear_P_fmt=sapply(Nonlinear_P,fmt_p)
+  )
+
+print(p_table)
+
+write.csv(p_table,file.path(out_dir,"Step15_MI_Eligible_RCS_P_values.csv"),row.names=FALSE)
+
+final_p_table <- data.frame(
+  Analysis=c("Weekday RCS","Weekend RCS"),
+  Overall_P=p_table$Overall_P_fmt,
+  Nonlinear_P=p_table$Nonlinear_P_fmt
+)
+
+write.csv(
+  final_p_table,
+  file.path(out_dir,"Step15_MI_Eligible_Final_Pvalue_Table.csv"),
+  row.names=FALSE
+)
+
+# ==============================================================================
+# 9. REFERENCE QC
+# ==============================================================================
+
+ref_wd <- plot_wd[which.min(abs(plot_wd$yhat-1)),]
+ref_we <- plot_we[which.min(abs(plot_we$yhat-1)),]
+
+if(any(abs(c(
+  ref_wd$yhat-1,ref_wd$lower-1,ref_wd$upper-1,
+  ref_we$yhat-1,ref_we$lower-1,ref_we$upper-1
+))>1e-8)) stop("Reference OR/CI QC failed.")
+
+cat("Reference weekday:",round(ref_wd$hours,3),"h\n")
+cat("Reference weekend:",round(ref_we$hours,3),"h\n")
+
+# ==============================================================================
+# 10. FIGURE — KEEP ORIGINAL FORMAT
+# ==============================================================================
+
+color_scheme <- c("Weekday"="#009E73","Weekend"="#D55E00")
+
+journal_theme_bare <- function(base_size=10){
+  theme_bw(base_size=base_size,base_family="Arial")+
+    theme(
+      panel.grid.major=element_blank(),panel.grid.minor=element_blank(),
+      panel.border=element_rect(colour="black",linewidth=0.6,fill=NA),
+      axis.title=element_blank(),axis.text=element_text(colour="black",size=base_size*0.9),
+      axis.ticks=element_line(colour="black",linewidth=0.35),
+      axis.ticks.length=unit(2,"pt"),legend.position="none",
+      plot.title=element_blank(),plot.margin=margin(6,8,4,6)
+    )
+}
+
+p <- ggplot(plot_data,aes(x=hours,y=yhat,group=timing))+
+  geom_ribbon(aes(ymin=lower,ymax=upper,fill=timing),alpha=0.18,colour=NA)+
+  geom_hline(yintercept=1,linetype="dashed",colour="grey40",linewidth=0.45)+
+  geom_line(aes(colour=timing),linewidth=0.85)+
+  scale_colour_manual(values=color_scheme)+
+  scale_fill_manual(values=color_scheme)+
+  scale_x_continuous(breaks=seq(0,24,by=4),limits=c(0,24),
+                     expand=expansion(mult=c(0.01,0.01)))+
+  scale_y_continuous(expand=expansion(mult=c(0.02,0.05)))+
+  journal_theme_bare()
+
+print(p)
+
+ggsave(file.path(fig_dir,"Step15_MI_Eligible_RCS_bare.png"),
+       p,width=3.5,height=3.2,dpi=300,bg="white")
+
+ggsave(file.path(fig_dir,"Step15_MI_Eligible_RCS_bare.tiff"),
+       p,width=3.5,height=3.2,dpi=600,compression="lzw",bg="white")
+
+# ==============================================================================
+# 11. QC + FINAL
+# ==============================================================================
+
+qc <- data.frame(
+  item=c(
+    "MI_file","sleep_file","MI_datasets","analytic_n_each_MI",
+    "weekday_model_n","weekend_model_n","exposure_source",
+    "weekday_knots","weekend_knots",
+    "weekday_reference","weekend_reference",
+    "weekday_overall_p","weekday_nonlinear_p",
+    "weekend_overall_p","weekend_nonlinear_p"
+  ),
+  value=c(
+    MI_file,sleep_file,M,unique(n_each),unique(n_wd),unique(n_we),
+    "Step13B midpoint_wd_hour / midpoint_we_hour",
+    paste(round(k_wd,3),collapse="; "),
+    paste(round(k_we,3),collapse="; "),
+    round(ref_wd$hours,4),round(ref_we$hours,4),
+    p_table$Overall_P_fmt[1],p_table$Nonlinear_P_fmt[1],
+    p_table$Overall_P_fmt[2],p_table$Nonlinear_P_fmt[2]
+  )
+)
+
+write.csv(qc,file.path(out_dir,"Step15_MI_Eligible_QC_summary.csv"),row.names=FALSE)
+
+expected <- c(
+  file.path(out_dir,"Step15_MI_Eligible_RCS_plot_data.csv"),
+  file.path(out_dir,"Step15_MI_Eligible_RCS_P_values.csv"),
+  file.path(out_dir,"Step15_MI_Eligible_Final_Pvalue_Table.csv"),
+  file.path(out_dir,"Step15_MI_Eligible_QC_summary.csv"),
+  file.path(fig_dir,"Step15_MI_Eligible_RCS_bare.png"),
+  file.path(fig_dir,"Step15_MI_Eligible_RCS_bare.tiff")
+)
+
+if(any(!file.exists(expected))) stop("One or more Step15 outputs are missing.")
+
+cat("\n============================================================\n")
+cat("STEP15 FINAL MIDPOINT: PASS\n")
+cat("MI datasets:",M,"| N:",unique(n_each),"\n")
+cat("Weekday model N:",unique(n_wd),"| Weekend model N:",unique(n_we),"\n")
+cat("Weekday Overall / Nonlinear:",p_table$Overall_P_fmt[1],"/",p_table$Nonlinear_P_fmt[1],"\n")
+cat("Weekend Overall / Nonlinear:",p_table$Overall_P_fmt[2],"/",p_table$Nonlinear_P_fmt[2],"\n")
+cat("============================================================\n")
+
+################################################################################
+# STEP16 FINAL — Sleep onset RCS
+# Step14 MI + Step13B sleep onset + survey Model 4 + 4-knot RCS + Rubin pooling
+# Sleep onset retained on original 0–24 h clock scale, consistent with old Step16
+################################################################################
+
+rm(list=ls())
+
+library(survey)
+library(rms)
+library(ggplot2)
+library(dplyr)
+library(grid)
+
+if(!requireNamespace("Hmisc",quietly=TRUE)) stop("Package 'Hmisc' is required.")
+options(survey.lonely.psu="adjust")
+
+# ==============================================================================
+# 1. PATHS + INPUT
+# ==============================================================================
+
+root_dir <- "D:/code"
+MI_file <- file.path(root_dir,"14.MI_completed_data_list.rds")
+sleep_file <- file.path(root_dir,"13B.Dataset_MI_Sleep_Rhythm_Index.rds")
+out_dir <- file.path(root_dir,"Step16_MI_Eligible_RCS_exposure_outcome_only")
+fig_dir <- file.path(out_dir,"figures")
+
+dir.create(out_dir,recursive=TRUE,showWarnings=FALSE)
+dir.create(fig_dir,recursive=TRUE,showWarnings=FALSE)
+
+if(!file.exists(MI_file)) stop("Cannot find: ",MI_file)
+if(!file.exists(sleep_file)) stop("Cannot find: ",sleep_file)
+
+analysis_list <- lapply(readRDS(MI_file),as.data.frame)
+M <- length(analysis_list)
+if(M!=20) stop("Expected 20 MI datasets; found ",M)
+
+sleep_dat <- as.data.frame(readRDS(sleep_file))
+sleep_keep <- c("SEQN","sleep_onset_wd_hour","sleep_onset_we_hour")
+miss <- setdiff(sleep_keep,names(sleep_dat))
+if(length(miss)>0) stop("Missing Step13B variables: ",paste(miss,collapse=", "))
+sleep_dat <- sleep_dat[,sleep_keep,drop=FALSE]
+if(anyDuplicated(sleep_dat$SEQN)>0) stop("Duplicate SEQN in Step13B dataset.")
+
+cat("\n============================================================\n")
+cat("STEP16 FINAL — SLEEP ONSET MI-POOLED RCS\n")
+cat("============================================================\n")
+cat("MI datasets:",M,"| N per MI:",nrow(analysis_list[[1]]),"\n")
+
+# ==============================================================================
+# 2. MERGE STEP13B SLEEP ONSET — ORIGINAL 0–24 CLOCK SCALE
+# ==============================================================================
+
+analysis_list <- lapply(seq_len(M),function(m){
+  dat <- analysis_list[[m]]
+  if(anyDuplicated(dat$SEQN)>0) stop("Duplicate SEQN in MI dataset ",m)
+  idx <- match(dat$SEQN,sleep_dat$SEQN)
+  if(anyNA(idx)) stop("SEQN unmatched between Step14 and Step13B in MI dataset ",m)
+  dat$sleep_onset_weekday_hours <- sleep_dat$sleep_onset_wd_hour[idx]
+  dat$sleep_onset_weekend_hours <- sleep_dat$sleep_onset_we_hour[idx]
+  dat
+})
+
+x_wd <- analysis_list[[1]]$sleep_onset_weekday_hours
+x_we <- analysis_list[[1]]$sleep_onset_weekend_hours
+
+if(anyNA(x_wd)||anyNA(x_we)) stop("Missing sleep onset after Step13B merge.")
+if(any(x_wd<0|x_wd>24)||any(x_we<0|x_we>24)) stop("Sleep onset outside 0–24 h.")
+
+for(m in 2:M){
+  if(!isTRUE(all.equal(x_wd,analysis_list[[m]]$sleep_onset_weekday_hours,check.attributes=FALSE)))
+    stop("Weekday onset differs across MI datasets.")
+  if(!isTRUE(all.equal(x_we,analysis_list[[m]]$sleep_onset_weekend_hours,check.attributes=FALSE)))
+    stop("Weekend onset differs across MI datasets.")
+}
+
+cat("Step13B onset merge: PASS\n")
+cat("Weekday range:",paste(round(range(x_wd),2),collapse="–"),"h\n")
+cat("Weekend range:",paste(round(range(x_we),2),collapse="–"),"h\n")
+
+# ==============================================================================
+# 3. OUTCOME + MODEL 4 QC
+# ==============================================================================
+
+outcome <- "Moderate_depression_above"
+
+cov_model4 <- c(
+  "RIDAGEYR","sex","race_ethnicity","education","INDFMPIR",
+  "BMI_value","MET_total","sedentary_min","smoke_status","Alcohol_Status",
+  "diabetes_or_prediabetes","htn_status","work_status"
+)
+
+required <- c(
+  "SEQN","SDMVPSU","SDMVSTRA","mec_adj",outcome,
+  "sleep_onset_weekday_hours","sleep_onset_weekend_hours",cov_model4
+)
+
+n_each <- sapply(seq_len(M),function(m){
+  dat <- analysis_list[[m]]
+  miss <- setdiff(required,names(dat))
+  if(length(miss)>0) stop("MI ",m," missing: ",paste(miss,collapse=", "))
+  if(anyNA(dat[,required,drop=FALSE])) stop("Residual missingness in MI dataset ",m)
+  if(any(!is.finite(dat$mec_adj))||any(dat$mec_adj<=0)) stop("Invalid weight in MI dataset ",m)
+  nrow(dat)
+})
+
+if(length(unique(n_each))!=1) stop("MI sample sizes differ.")
+
+for(m in seq_len(M)){
+  dat <- analysis_list[[m]]
+  if("PHQ9_depression_above_10" %in% names(dat)){
+    ok <- complete.cases(dat[[outcome]],dat$PHQ9_depression_above_10)
+    if(any(dat[[outcome]][ok]!=dat$PHQ9_depression_above_10[ok]))
+      stop("Outcome mismatch in MI dataset ",m)
+  }
+}
+
+factor_vars <- c(
+  "sex","race_ethnicity","education","smoke_status",
+  "Alcohol_Status","diabetes_or_prediabetes","htn_status","work_status"
+)
+numeric_vars <- c("RIDAGEYR","INDFMPIR","BMI_value","MET_total","sedentary_min")
+
+if(any(!sapply(analysis_list[[1]][factor_vars],is.factor)))
+  stop("One or more categorical covariates are not factors.")
+if(any(!sapply(analysis_list[[1]][numeric_vars],is.numeric)))
+  stop("One or more continuous covariates are not numeric.")
+
+cat("MI / outcome / Model 4 / class QC: PASS\n")
+
+# ==============================================================================
+# 4. COMMON 4-KNOT RCS
+# ==============================================================================
+
+k_wd <- Hmisc::rcspline.eval(x_wd,nk=4,knots.only=TRUE)
+k_we <- Hmisc::rcspline.eval(x_we,nk=4,knots.only=TRUE)
+
+ktext <- function(x)
+  paste0("c(",paste(format(x,digits=17,scientific=FALSE,trim=TRUE),collapse=","),")")
+
+f_wd <- as.formula(paste0(
+  outcome," ~ rcs(sleep_onset_weekday_hours,",ktext(k_wd),") + ",
+  paste(cov_model4,collapse=" + ")
+))
+
+f_we <- as.formula(paste0(
+  outcome," ~ rcs(sleep_onset_weekend_hours,",ktext(k_we),") + ",
+  paste(cov_model4,collapse=" + ")
+))
+
+cat("Weekday knots:",paste(round(k_wd,3),collapse=", "),"\n")
+cat("Weekend knots:",paste(round(k_we,3),collapse=", "),"\n")
+
+# ==============================================================================
+# 5. FIT 20 × 2 SURVEY MODELS
+# ==============================================================================
+
+fit_one <- function(dat,formula){
+  des <- svydesign(id=~SDMVPSU,strata=~SDMVSTRA,weights=~mec_adj,nest=TRUE,data=dat)
+  svyglm(formula,design=des,family=quasibinomial())
+}
+
+fits_wd <- lapply(analysis_list,fit_one,formula=f_wd)
+fits_we <- lapply(analysis_list,fit_one,formula=f_we)
+
+n_wd <- sapply(fits_wd,nobs)
+n_we <- sapply(fits_we,nobs)
+
+if(any(n_wd!=n_each)||any(n_we!=n_each)) stop("Model N differs from MI analytic N.")
+cat("All 40 RCS models fitted; model N =",unique(n_wd),"\n")
+
+# ==============================================================================
+# 6. RUBIN POOLING
+# ==============================================================================
+
+pool_models <- function(fits){
+  nm <- names(coef(fits[[1]]))
+  if(!all(vapply(fits,function(f) identical(names(coef(f)),nm),logical(1))))
+    stop("Coefficient structures differ across MI datasets.")
+  
+  Q <- do.call(rbind,lapply(fits,function(f) coef(f)[nm]))
+  U <- lapply(fits,function(f) vcov(f)[nm,nm,drop=FALSE])
+  
+  if(any(!is.finite(Q))||any(vapply(U,function(x) any(!is.finite(x)),logical(1))))
+    stop("Non-finite coefficient/covariance detected.")
+  
+  qbar <- colMeans(Q); ubar <- Reduce("+",U)/length(fits); B <- cov(Q)
+  list(beta=qbar,V=ubar+(1+1/length(fits))*B,template=fits[[1]])
+}
+
+pool_wd <- pool_models(fits_wd)
+pool_we <- pool_models(fits_we)
+cat("Rubin pooling: PASS\n")
+
+# ==============================================================================
+# 7. PREDICTION — SAME 0–24 LOGIC AS OLD STEP16
+# ==============================================================================
+
+dat_ref <- analysis_list[[1]]
+mode1 <- function(x){ux <- unique(x); ux[which.max(tabulate(match(x,ux)))]}
+
+ref_cov <- lapply(
+  dat_ref[,cov_model4,drop=FALSE],
+  function(x) if(is.numeric(x)) median(x) else mode1(x)
+)
+
+make_newdata <- function(exposure){
+  nd <- data.frame(x=seq(0,24,length.out=200))
+  names(nd)[1] <- exposure
+  
+  for(v in cov_model4){
+    if(is.factor(dat_ref[[v]]))
+      nd[[v]] <- factor(rep(as.character(ref_cov[[v]]),nrow(nd)),levels=levels(dat_ref[[v]]))
+    else nd[[v]] <- rep(ref_cov[[v]],nrow(nd))
+  }
+  nd
+}
+
+predict_rcs <- function(pool,exposure,timing){
+  nd <- make_newdata(exposure)
+  X <- model.matrix(delete.response(terms(pool$template)),data=nd)
+  common <- intersect(colnames(X),names(pool$beta))
+  
+  X <- X[,common,drop=FALSE]
+  b <- pool$beta[common]
+  V <- pool$V[common,common,drop=FALSE]
+  
+  lp <- drop(X%*%b)
+  ref <- which.min(lp)
+  D <- sweep(X,2,X[ref,],"-")
+  
+  logOR <- drop(D%*%b)
+  se <- sqrt(pmax(rowSums((D%*%V)*D),0))
+  
+  data.frame(
+    hours=nd[[exposure]],
+    yhat=exp(logOR),
+    lower=exp(logOR-1.96*se),
+    upper=exp(logOR+1.96*se),
+    timing=timing
+  )
+}
+
+plot_wd <- predict_rcs(pool_wd,"sleep_onset_weekday_hours","Weekday")
+plot_we <- predict_rcs(pool_we,"sleep_onset_weekend_hours","Weekend")
+plot_data <- rbind(plot_wd,plot_we)
+
+write.csv(
+  plot_data,
+  file.path(out_dir,"Step16_MI_Eligible_RCS_plot_data.csv"),
+  row.names=FALSE
+)
+
+# ==============================================================================
+# 8. OVERALL / NONLINEAR P
+# ==============================================================================
+
+wald_p <- function(pool,exposure,nonlinear=FALSE){
+  idx <- grep(exposure,names(pool$beta),fixed=TRUE)
+  if(nonlinear) idx <- idx[-1]
+  
+  b <- pool$beta[idx]
+  V <- pool$V[idx,idx,drop=FALSE]
+  
+  stat <- drop(t(b)%*%solve(V,b))
+  pchisq(stat,df=length(b),lower.tail=FALSE)
+}
+
+fmt_p <- function(p) ifelse(p<0.001,"<0.001",sprintf("%.3f",p))
+
+p_table <- data.frame(
+  Timing=c("Weekday","Weekend"),
+  Overall_P=c(
+    wald_p(pool_wd,"sleep_onset_weekday_hours"),
+    wald_p(pool_we,"sleep_onset_weekend_hours")
+  ),
+  Nonlinear_P=c(
+    wald_p(pool_wd,"sleep_onset_weekday_hours",TRUE),
+    wald_p(pool_we,"sleep_onset_weekend_hours",TRUE)
+  )
+) %>%
+  mutate(
+    Overall_P_fmt=sapply(Overall_P,fmt_p),
+    Nonlinear_P_fmt=sapply(Nonlinear_P,fmt_p)
+  )
+
+print(p_table)
+
+final_p_table <- data.frame(
+  Analysis=c("Weekday sleep onset RCS","Weekend sleep onset RCS"),
+  Overall_P=p_table$Overall_P_fmt,
+  Nonlinear_P=p_table$Nonlinear_P_fmt
+)
+
+write.csv(
+  final_p_table,
+  file.path(out_dir,"Step16_MI_Eligible_RCS_P_values.csv"),
+  row.names=FALSE
+)
+
+# ==============================================================================
+# 9. REFERENCE QC
+# ==============================================================================
+
+ref_wd <- plot_wd[which.min(abs(plot_wd$yhat-1)),]
+ref_we <- plot_we[which.min(abs(plot_we$yhat-1)),]
+
+if(any(abs(c(
+  ref_wd$yhat-1,ref_wd$lower-1,ref_wd$upper-1,
+  ref_we$yhat-1,ref_we$lower-1,ref_we$upper-1
+))>1e-8)) stop("Reference OR/CI QC failed.")
+
+cat("Reference weekday:",round(ref_wd$hours,3),"h\n")
+cat("Reference weekend:",round(ref_we$hours,3),"h\n")
+
+# ==============================================================================
+# 10. FIGURE — ORIGINAL STEP16 FORMAT
+# ==============================================================================
+
+color_scheme <- c("Weekday"="#4C97D2","Weekend"="#E07B39")
+
+journal_theme_bare <- function(base_size=10){
+  theme_bw(base_size=base_size,base_family="Arial")+
+    theme(
+      panel.grid.major=element_blank(),panel.grid.minor=element_blank(),
+      panel.border=element_rect(colour="black",linewidth=0.6,fill=NA),
+      axis.title=element_blank(),
+      axis.text=element_text(colour="black",size=base_size*0.9),
+      axis.ticks=element_line(colour="black",linewidth=0.35),
+      axis.ticks.length=unit(2,"pt"),
+      legend.position="none",plot.title=element_blank(),
+      plot.margin=margin(6,8,4,6)
+    )
+}
+
+p <- ggplot(plot_data,aes(x=hours,y=yhat,group=timing))+
+  geom_ribbon(aes(ymin=lower,ymax=upper,fill=timing),alpha=0.18,colour=NA)+
+  geom_hline(yintercept=1,linetype="dashed",colour="grey40",linewidth=0.45)+
+  geom_line(aes(colour=timing),linewidth=0.85)+
+  scale_colour_manual(values=color_scheme)+
+  scale_fill_manual(values=color_scheme)+
+  scale_x_continuous(
+    breaks=seq(0,24,by=4),
+    limits=c(0,24),
+    expand=expansion(mult=c(0.01,0.01))
+  )+
+  journal_theme_bare()
+
+print(p)
+
+ggsave(
+  file.path(fig_dir,"Step16_MI_Eligible_RCS_bare.png"),
+  p,width=3.5,height=3.2,dpi=300,bg="white"
+)
+
+ggsave(
+  file.path(fig_dir,"Step16_MI_Eligible_RCS_bare.tiff"),
+  p,width=3.5,height=3.2,dpi=600,
+  compression="lzw",bg="white"
+)
+
+# ==============================================================================
+# 11. QC + FINAL
+# ==============================================================================
+
+qc <- data.frame(
+  item=c(
+    "MI_file","sleep_file","MI_datasets","analytic_n_each_MI",
+    "weekday_model_n","weekend_model_n","exposure_source",
+    "weekday_knots","weekend_knots",
+    "weekday_reference","weekend_reference",
+    "weekday_overall_p","weekday_nonlinear_p",
+    "weekend_overall_p","weekend_nonlinear_p"
+  ),
+  value=c(
+    MI_file,sleep_file,M,unique(n_each),unique(n_wd),unique(n_we),
+    "Step13B sleep_onset_wd_hour / sleep_onset_we_hour",
+    paste(round(k_wd,3),collapse="; "),
+    paste(round(k_we,3),collapse="; "),
+    round(ref_wd$hours,4),round(ref_we$hours,4),
+    p_table$Overall_P_fmt[1],p_table$Nonlinear_P_fmt[1],
+    p_table$Overall_P_fmt[2],p_table$Nonlinear_P_fmt[2]
+  )
+)
+
+write.csv(
+  qc,
+  file.path(out_dir,"Step16_MI_Eligible_QC_summary.csv"),
+  row.names=FALSE
+)
+
+expected <- c(
+  file.path(out_dir,"Step16_MI_Eligible_RCS_plot_data.csv"),
+  file.path(out_dir,"Step16_MI_Eligible_RCS_P_values.csv"),
+  file.path(out_dir,"Step16_MI_Eligible_QC_summary.csv"),
+  file.path(fig_dir,"Step16_MI_Eligible_RCS_bare.png"),
+  file.path(fig_dir,"Step16_MI_Eligible_RCS_bare.tiff")
+)
+
+if(any(!file.exists(expected))) stop("One or more Step16 outputs are missing.")
+
+cat("\n============================================================\n")
+cat("STEP16 FINAL SLEEP ONSET: PASS\n")
+cat("MI datasets:",M,"| N:",unique(n_each),"\n")
+cat("Weekday model N:",unique(n_wd),"| Weekend model N:",unique(n_we),"\n")
+cat("Weekday Overall / Nonlinear:",p_table$Overall_P_fmt[1],"/",p_table$Nonlinear_P_fmt[1],"\n")
+cat("Weekend Overall / Nonlinear:",p_table$Overall_P_fmt[2],"/",p_table$Nonlinear_P_fmt[2],"\n")
+cat("============================================================\n")
+
+################################################################################
+# STEP17 FINAL — Wake time RCS
+# Step14 MI + Step13B wake time + survey Model 4 + 4-knot RCS + Rubin pooling
+# Wake time retained on original 0–24 h clock scale, consistent with old Step17
+################################################################################
+
+rm(list=ls())
+
+library(survey)
+library(rms)
+library(ggplot2)
+library(dplyr)
+library(grid)
+
+if(!requireNamespace("Hmisc",quietly=TRUE)) stop("Package 'Hmisc' is required.")
+options(survey.lonely.psu="adjust")
+
+# ==============================================================================
+# 1. PATHS + INPUT
+# ==============================================================================
+
+root_dir <- "D:/code"
+MI_file <- file.path(root_dir,"14.MI_completed_data_list.rds")
+sleep_file <- file.path(root_dir,"13B.Dataset_MI_Sleep_Rhythm_Index.rds")
+out_dir <- file.path(root_dir,"Step17_MI_Eligible_RCS_exposure_outcome_only")
+fig_dir <- file.path(out_dir,"figures")
+
+dir.create(out_dir,recursive=TRUE,showWarnings=FALSE)
+dir.create(fig_dir,recursive=TRUE,showWarnings=FALSE)
+
+if(!file.exists(MI_file)) stop("Cannot find: ",MI_file)
+if(!file.exists(sleep_file)) stop("Cannot find: ",sleep_file)
+
+analysis_list <- lapply(readRDS(MI_file),as.data.frame)
+M <- length(analysis_list)
+if(M!=20) stop("Expected 20 MI datasets; found ",M)
+
+sleep_dat <- as.data.frame(readRDS(sleep_file))
+sleep_keep <- c("SEQN","wake_time_wd_hour","wake_time_we_hour")
+miss <- setdiff(sleep_keep,names(sleep_dat))
+if(length(miss)>0) stop("Missing Step13B variables: ",paste(miss,collapse=", "))
+sleep_dat <- sleep_dat[,sleep_keep,drop=FALSE]
+if(anyDuplicated(sleep_dat$SEQN)>0) stop("Duplicate SEQN in Step13B dataset.")
+
+cat("\n============================================================\n")
+cat("STEP17 FINAL — WAKE TIME MI-POOLED RCS\n")
+cat("============================================================\n")
+cat("MI datasets:",M,"| N per MI:",nrow(analysis_list[[1]]),"\n")
+
+# ==============================================================================
+# 2. MERGE STEP13B WAKE TIME — ORIGINAL 0–24 CLOCK SCALE
+# ==============================================================================
+
+analysis_list <- lapply(seq_len(M),function(m){
+  dat <- analysis_list[[m]]
+  if(!"SEQN"%in%names(dat)) stop("SEQN missing in MI dataset ",m)
+  if(anyDuplicated(dat$SEQN)>0) stop("Duplicate SEQN in MI dataset ",m)
+  
+  idx <- match(dat$SEQN,sleep_dat$SEQN)
+  if(anyNA(idx)) stop("SEQN unmatched between Step14 and Step13B in MI dataset ",m)
+  
+  dat$sleep_wake_weekday_hours <- sleep_dat$wake_time_wd_hour[idx]
+  dat$sleep_wake_weekend_hours <- sleep_dat$wake_time_we_hour[idx]
+  dat
+})
+
+x_wd <- analysis_list[[1]]$sleep_wake_weekday_hours
+x_we <- analysis_list[[1]]$sleep_wake_weekend_hours
+
+if(anyNA(x_wd)||anyNA(x_we)) stop("Missing wake time after Step13B merge.")
+if(any(x_wd<0|x_wd>24)||any(x_we<0|x_we>24)) stop("Wake time outside 0–24 h.")
+
+for(m in 2:M){
+  if(!isTRUE(all.equal(x_wd,analysis_list[[m]]$sleep_wake_weekday_hours,check.attributes=FALSE)))
+    stop("Weekday wake time differs across MI datasets.")
+  if(!isTRUE(all.equal(x_we,analysis_list[[m]]$sleep_wake_weekend_hours,check.attributes=FALSE)))
+    stop("Weekend wake time differs across MI datasets.")
+}
+
+cat("Step13B wake-time merge: PASS\n")
+cat("Weekday range:",paste(round(range(x_wd),2),collapse="–"),"h\n")
+cat("Weekend range:",paste(round(range(x_we),2),collapse="–"),"h\n")
+
+# ==============================================================================
+# 3. OUTCOME + MODEL 4 QC
+# ==============================================================================
+
+outcome <- "Moderate_depression_above"
+
+cov_model4 <- c(
+  "RIDAGEYR","sex","race_ethnicity","education","INDFMPIR",
+  "BMI_value","MET_total","sedentary_min","smoke_status","Alcohol_Status",
+  "diabetes_or_prediabetes","htn_status","work_status"
+)
+
+required <- c(
+  "SEQN","SDMVPSU","SDMVSTRA","mec_adj",outcome,
+  "sleep_wake_weekday_hours","sleep_wake_weekend_hours",cov_model4
+)
+
+n_each <- sapply(seq_len(M),function(m){
+  dat <- analysis_list[[m]]
+  miss <- setdiff(required,names(dat))
+  if(length(miss)>0) stop("MI ",m," missing: ",paste(miss,collapse=", "))
+  if(anyNA(dat[,required,drop=FALSE])) stop("Residual missingness in MI dataset ",m)
+  if(any(!is.finite(dat$mec_adj))||any(dat$mec_adj<=0)) stop("Invalid weight in MI dataset ",m)
+  nrow(dat)
+})
+
+if(length(unique(n_each))!=1) stop("MI sample sizes differ.")
+
+for(m in seq_len(M)){
+  dat <- analysis_list[[m]]
+  if("PHQ9_depression_above_10"%in%names(dat)){
+    ok <- complete.cases(dat[[outcome]],dat$PHQ9_depression_above_10)
+    if(any(dat[[outcome]][ok]!=dat$PHQ9_depression_above_10[ok]))
+      stop("Outcome mismatch in MI dataset ",m)
+  }
+}
+
+factor_vars <- c("sex","race_ethnicity","education","smoke_status",
+                 "Alcohol_Status","diabetes_or_prediabetes","htn_status","work_status")
+numeric_vars <- c("RIDAGEYR","INDFMPIR","BMI_value","MET_total","sedentary_min")
+
+if(any(!sapply(analysis_list[[1]][factor_vars],is.factor)))
+  stop("One or more categorical covariates are not factors.")
+if(any(!sapply(analysis_list[[1]][numeric_vars],is.numeric)))
+  stop("One or more continuous covariates are not numeric.")
+
+cat("MI / outcome / Model 4 / class QC: PASS\n")
+
+# ==============================================================================
+# 4. COMMON 4-KNOT RCS
+# ==============================================================================
+
+k_wd <- Hmisc::rcspline.eval(x_wd,nk=4,knots.only=TRUE)
+k_we <- Hmisc::rcspline.eval(x_we,nk=4,knots.only=TRUE)
+
+ktext <- function(x)
+  paste0("c(",paste(format(x,digits=17,scientific=FALSE,trim=TRUE),collapse=","),")")
+
+f_wd <- as.formula(paste0(
+  outcome," ~ rcs(sleep_wake_weekday_hours,",ktext(k_wd),") + ",
+  paste(cov_model4,collapse=" + ")
+))
+
+f_we <- as.formula(paste0(
+  outcome," ~ rcs(sleep_wake_weekend_hours,",ktext(k_we),") + ",
+  paste(cov_model4,collapse=" + ")
+))
+
+cat("Weekday knots:",paste(round(k_wd,3),collapse=", "),"\n")
+cat("Weekend knots:",paste(round(k_we,3),collapse=", "),"\n")
+
+# ==============================================================================
+# 5. FIT 20 × 2 SURVEY MODELS
+# ==============================================================================
+
+fit_one <- function(dat,formula){
+  des <- svydesign(id=~SDMVPSU,strata=~SDMVSTRA,weights=~mec_adj,nest=TRUE,data=dat)
+  svyglm(formula,design=des,family=quasibinomial())
+}
+
+fits_wd <- lapply(analysis_list,fit_one,formula=f_wd)
+fits_we <- lapply(analysis_list,fit_one,formula=f_we)
+
+n_wd <- sapply(fits_wd,nobs)
+n_we <- sapply(fits_we,nobs)
+
+if(any(n_wd!=n_each)||any(n_we!=n_each)) stop("Model N differs from MI analytic N.")
+cat("All 40 RCS models fitted; model N =",unique(n_wd),"\n")
+
+# ==============================================================================
+# 6. RUBIN POOLING
+# ==============================================================================
+
+pool_models <- function(fits){
+  nm <- names(coef(fits[[1]]))
+  
+  if(!all(vapply(fits,function(f) identical(names(coef(f)),nm),logical(1))))
+    stop("Coefficient structures differ across MI datasets.")
+  
+  Q <- do.call(rbind,lapply(fits,function(f) coef(f)[nm]))
+  U <- lapply(fits,function(f) vcov(f)[nm,nm,drop=FALSE])
+  
+  if(any(!is.finite(Q))||any(vapply(U,function(x) any(!is.finite(x)),logical(1))))
+    stop("Non-finite coefficient/covariance detected.")
+  
+  qbar <- colMeans(Q)
+  ubar <- Reduce("+",U)/length(fits)
+  B <- cov(Q)
+  
+  list(beta=qbar,V=ubar+(1+1/length(fits))*B,template=fits[[1]])
+}
+
+pool_wd <- pool_models(fits_wd)
+pool_we <- pool_models(fits_we)
+
+cat("Rubin pooling: PASS\n")
+
+# ==============================================================================
+# 7. PREDICTION — SAME 0–24 LOGIC AS OLD STEP17
+# ==============================================================================
+
+dat_ref <- analysis_list[[1]]
+mode1 <- function(x){ux <- unique(x); ux[which.max(tabulate(match(x,ux)))]}
+
+ref_cov <- lapply(
+  dat_ref[,cov_model4,drop=FALSE],
+  function(x) if(is.numeric(x)) median(x) else mode1(x)
+)
+
+make_newdata <- function(exposure){
+  nd <- data.frame(x=seq(0,24,length.out=200))
+  names(nd)[1] <- exposure
+  
+  for(v in cov_model4){
+    if(is.factor(dat_ref[[v]]))
+      nd[[v]] <- factor(rep(as.character(ref_cov[[v]]),nrow(nd)),levels=levels(dat_ref[[v]]))
+    else nd[[v]] <- rep(ref_cov[[v]],nrow(nd))
+  }
+  nd
+}
+
+predict_rcs <- function(pool,exposure,timing){
+  nd <- make_newdata(exposure)
+  
+  X <- model.matrix(delete.response(terms(pool$template)),data=nd)
+  common <- intersect(colnames(X),names(pool$beta))
+  
+  X <- X[,common,drop=FALSE]
+  b <- pool$beta[common]
+  V <- pool$V[common,common,drop=FALSE]
+  
+  lp <- drop(X%*%b)
+  ref <- which.min(lp)
+  D <- sweep(X,2,X[ref,],"-")
+  
+  logOR <- drop(D%*%b)
+  se <- sqrt(pmax(rowSums((D%*%V)*D),0))
+  
+  data.frame(
+    hours=nd[[exposure]],
+    yhat=exp(logOR),
+    lower=exp(logOR-1.96*se),
+    upper=exp(logOR+1.96*se),
+    timing=timing
+  )
+}
+
+plot_wd <- predict_rcs(pool_wd,"sleep_wake_weekday_hours","Weekday")
+plot_we <- predict_rcs(pool_we,"sleep_wake_weekend_hours","Weekend")
+plot_data <- rbind(plot_wd,plot_we)
+
+write.csv(
+  plot_data,
+  file.path(out_dir,"Step17_MI_Eligible_RCS_plot_data.csv"),
+  row.names=FALSE
+)
+
+# ==============================================================================
+# 8. OVERALL / NONLINEAR P
+# ==============================================================================
+
+wald_p <- function(pool,exposure,nonlinear=FALSE){
+  idx <- grep(exposure,names(pool$beta),fixed=TRUE)
+  if(nonlinear) idx <- idx[-1]
+  
+  b <- pool$beta[idx]
+  V <- pool$V[idx,idx,drop=FALSE]
+  
+  stat <- drop(t(b)%*%solve(V,b))
+  pchisq(stat,df=length(b),lower.tail=FALSE)
+}
+
+fmt_p <- function(p) ifelse(p<0.001,"<0.001",sprintf("%.3f",p))
+
+p_table <- data.frame(
+  Timing=c("Weekday","Weekend"),
+  Overall_P=c(
+    wald_p(pool_wd,"sleep_wake_weekday_hours"),
+    wald_p(pool_we,"sleep_wake_weekend_hours")
+  ),
+  Nonlinear_P=c(
+    wald_p(pool_wd,"sleep_wake_weekday_hours",TRUE),
+    wald_p(pool_we,"sleep_wake_weekend_hours",TRUE)
+  )
+) %>%
+  mutate(
+    Overall_P_fmt=sapply(Overall_P,fmt_p),
+    Nonlinear_P_fmt=sapply(Nonlinear_P,fmt_p)
+  )
+
+print(p_table)
+
+final_p_table <- data.frame(
+  Analysis=c("Weekday wake time RCS","Weekend wake time RCS"),
+  Overall_P=p_table$Overall_P_fmt,
+  Nonlinear_P=p_table$Nonlinear_P_fmt
+)
+
+write.csv(
+  final_p_table,
+  file.path(out_dir,"Step17_MI_Eligible_RCS_P_values.csv"),
+  row.names=FALSE
+)
+
+# ==============================================================================
+# 9. REFERENCE QC
+# ==============================================================================
+
+ref_wd <- plot_wd[which.min(abs(plot_wd$yhat-1)),]
+ref_we <- plot_we[which.min(abs(plot_we$yhat-1)),]
+
+if(any(abs(c(
+  ref_wd$yhat-1,ref_wd$lower-1,ref_wd$upper-1,
+  ref_we$yhat-1,ref_we$lower-1,ref_we$upper-1
+))>1e-8)) stop("Reference OR/CI QC failed.")
+
+cat("Reference weekday:",round(ref_wd$hours,3),"h\n")
+cat("Reference weekend:",round(ref_we$hours,3),"h\n")
+
+# ==============================================================================
+# 10. FIGURE — ORIGINAL STEP17 FORMAT
+# ==============================================================================
+
+color_scheme <- c("Weekday"="#7EC3EB","Weekend"="#F2B84B")
+
+journal_theme_bare <- function(base_size=10){
+  theme_bw(base_size=base_size,base_family="Arial")+
+    theme(
+      panel.grid.major=element_blank(),panel.grid.minor=element_blank(),
+      panel.border=element_rect(colour="black",linewidth=0.6,fill=NA),
+      axis.title=element_blank(),
+      axis.text=element_text(colour="black",size=base_size*0.9),
+      axis.ticks=element_line(colour="black",linewidth=0.35),
+      axis.ticks.length=unit(2,"pt"),
+      legend.position="none",plot.title=element_blank(),
+      plot.margin=margin(6,8,4,6)
+    )
+}
+
+p <- ggplot(plot_data,aes(x=hours,y=yhat,group=timing))+
+  geom_ribbon(aes(ymin=lower,ymax=upper,fill=timing),alpha=0.18,colour=NA)+
+  geom_hline(yintercept=1,linetype="dashed",colour="grey40",linewidth=0.45)+
+  geom_line(aes(colour=timing),linewidth=0.85)+
+  scale_colour_manual(values=color_scheme)+
+  scale_fill_manual(values=color_scheme)+
+  scale_x_continuous(
+    breaks=seq(0,24,by=4),
+    limits=c(0,24),
+    expand=expansion(mult=c(0.01,0.01))
+  )+
+  journal_theme_bare()
+
+print(p)
+
+ggsave(
+  file.path(fig_dir,"Step17_MI_Eligible_RCS_bare.png"),
+  p,width=3.5,height=3.2,dpi=300,bg="white"
+)
+
+ggsave(
+  file.path(fig_dir,"Step17_MI_Eligible_RCS_bare.tiff"),
+  p,width=3.5,height=3.2,dpi=600,
+  compression="lzw",bg="white"
+)
+
+# ==============================================================================
+# 11. QC + FINAL
+# ==============================================================================
+
+qc <- data.frame(
+  item=c(
+    "MI_file","sleep_file","MI_datasets","analytic_n_each_MI",
+    "weekday_model_n","weekend_model_n","exposure_source",
+    "weekday_knots","weekend_knots",
+    "weekday_reference","weekend_reference",
+    "weekday_overall_p","weekday_nonlinear_p",
+    "weekend_overall_p","weekend_nonlinear_p"
+  ),
+  value=c(
+    MI_file,sleep_file,M,unique(n_each),unique(n_wd),unique(n_we),
+    "Step13B wake_time_wd_hour / wake_time_we_hour",
+    paste(round(k_wd,3),collapse="; "),
+    paste(round(k_we,3),collapse="; "),
+    round(ref_wd$hours,4),round(ref_we$hours,4),
+    p_table$Overall_P_fmt[1],p_table$Nonlinear_P_fmt[1],
+    p_table$Overall_P_fmt[2],p_table$Nonlinear_P_fmt[2]
+  )
+)
+
+write.csv(
+  qc,
+  file.path(out_dir,"Step17_MI_Eligible_RCS_QC_summary.csv"),
+  row.names=FALSE
+)
+
+expected <- c(
+  file.path(out_dir,"Step17_MI_Eligible_RCS_plot_data.csv"),
+  file.path(out_dir,"Step17_MI_Eligible_RCS_P_values.csv"),
+  file.path(out_dir,"Step17_MI_Eligible_RCS_QC_summary.csv"),
+  file.path(fig_dir,"Step17_MI_Eligible_RCS_bare.png"),
+  file.path(fig_dir,"Step17_MI_Eligible_RCS_bare.tiff")
+)
+
+if(any(!file.exists(expected))) stop("One or more Step17 outputs are missing.")
+
+cat("\n============================================================\n")
+cat("STEP17 FINAL WAKE TIME: PASS\n")
+cat("MI datasets:",M,"| N:",unique(n_each),"\n")
+cat("Weekday model N:",unique(n_wd),"| Weekend model N:",unique(n_we),"\n")
+cat("Weekday Overall / Nonlinear:",p_table$Overall_P_fmt[1],"/",p_table$Nonlinear_P_fmt[1],"\n")
+cat("Weekend Overall / Nonlinear:",p_table$Overall_P_fmt[2],"/",p_table$Nonlinear_P_fmt[2],"\n")
+cat("============================================================\n")
+
+################################################################################
+# STEP18 FINAL
+# MI-completed dataset + Continuous Sleep Rhythm Disruption Index Preparation
+#
+# Purpose:
+#   1. Read MI completed covariate datasets
+#   2. Merge non-imputed sleep rhythm disruption index
+#   3. Generate analysis-ready datasets
+#
+# Exposure:
+#   sleep_rhythm_disruption_index
+#
+# Derived variables:
+#   - continuous index
+#   - z-standardized index
+#   - weighted quintiles
+#
+# Input:
+#   14.MI_completed_data_list.rds
+#   13B.Dataset_MI_Sleep_Rhythm_Index.rds
+#
+# Output:
+#   18.MI_sleep_rhythm_analysis_list_FINAL.rds
+#
+################################################################################
+
+
+rm(list=ls())
+
+
+library(tidyverse)
+library(survey)
+
+
+
+options(
+  survey.lonely.psu="adjust"
+)
+
+
+
+# ==============================================================================
+# Paths
+# ==============================================================================
+
+
+root_dir <- "D:/code"
+
+
+
+MI_file <- file.path(
+  root_dir,
+  "14.MI_completed_data_list.rds"
+)
+
+
+sleep_file <- file.path(
+  root_dir,
+  "13B.Dataset_MI_Sleep_Rhythm_Index.rds"
+)
+
+
+
+out_file <- file.path(
+  root_dir,
+  "18.MI_sleep_rhythm_analysis_list_FINAL.rds"
+)
+
+
+
+qc_dir <- file.path(
+  root_dir,
+  "qc_outputs"
+)
+
+
+if(!dir.exists(qc_dir)){
+  
+  dir.create(
+    qc_dir,
+    recursive=TRUE
+  )
+  
+}
+
+
+
+# ==============================================================================
+# Load MI completed datasets
+# ==============================================================================
+
+
+cat("Loading MI completed datasets...\n")
+
+
+mi_list <- readRDS(
+  MI_file
+)
+
+
+cat(
+  "Number of imputations:",
+  length(mi_list),
+  "\n"
+)
+
+
+
+# ==============================================================================
+# Load sleep rhythm exposure
+# ==============================================================================
+
+
+cat("Loading sleep rhythm index...\n")
+
+
+sleep_dat <- readRDS(
+  sleep_file
+)
+
+
+sleep_dat <- as.data.frame(
+  sleep_dat
+)
+
+
+
+# ==============================================================================
+# Check identifiers
+# ==============================================================================
+
+
+if(
+  !"SEQN" %in% names(sleep_dat)
+){
+  
+  stop(
+    "SEQN missing in sleep dataset"
+  )
+  
+}
+
+
+if(
+  !"SEQN" %in% names(mi_list[[1]])
+){
+  
+  stop(
+    "SEQN missing in MI dataset"
+  )
+  
+}
+
+
+
+# ==============================================================================
+# Select exposure variables
+# ==============================================================================
+
+
+sleep_keep <- c(
+  
+  "SEQN",
+  
+  "sleep_rhythm_disruption_index",
+  
+  "sleep_rhythm_binary_score",
+  
+  "sleep_rhythm_index_quintile"
+  
+)
+
+
+
+missing_sleep_vars <- setdiff(
+  sleep_keep,
+  names(sleep_dat)
+)
+
+
+if(
+  length(missing_sleep_vars)>0
+){
+  
+  stop(
+    paste(
+      "Missing sleep variables:",
+      paste(
+        missing_sleep_vars,
+        collapse=", "
+      )
+    )
+  )
+  
+}
+
+
+
+sleep_dat_merge <- sleep_dat %>%
+  
+  select(
+    all_of(sleep_keep)
+  )
+
+
+
+# ==============================================================================
+# Merge MI completed datasets
+# ==============================================================================
+
+
+analysis_list <- vector(
+  "list",
+  length(mi_list)
+)
+
+
+
+for(i in seq_along(mi_list)){
+  
+  
+  cat(
+    "Processing imputation:",
+    i,
+    "\n"
+  )
+  
+  
+  dat_i <- mi_list[[i]]
+  
+  
+  dat_i <- dat_i %>%
+    
+    left_join(
+      
+      sleep_dat_merge,
+      
+      by="SEQN"
+      
+    )
+  
+  
+  
+  # ---------------------------------------------------------------------------
+  # Check duplicate merge
+  # ---------------------------------------------------------------------------
+  
+  
+  if(
+    nrow(dat_i)!=nrow(mi_list[[i]])
+  ){
+    
+    stop(
+      "Merge changed row number in imputation ",
+      i
+    )
+    
+  }
+  
+  
+  
+  # ---------------------------------------------------------------------------
+  # Standardized exposure
+  # ---------------------------------------------------------------------------
+  
+  
+  dat_i <-
+    
+    dat_i %>%
+    
+    mutate(
+      
+      sleep_rhythm_index_z =
+        
+        as.numeric(
+          
+          scale(
+            sleep_rhythm_disruption_index
+          )
+          
+        )
+      
+    )
+  
+  
+  
+  # ---------------------------------------------------------------------------
+  # Weighted quintile
+  # ---------------------------------------------------------------------------
+  
+  
+  design_i <-
+    
+    svydesign(
+      
+      id=~SDMVPSU,
+      
+      strata=~SDMVSTRA,
+      
+      weights=~mec_adj,
+      
+      nest=TRUE,
+      
+      data=dat_i
+      
+    )
+  
+  
+  
+  qcut_i <-
+    
+    svyquantile(
+      
+      ~sleep_rhythm_disruption_index,
+      
+      design_i,
+      
+      quantiles=
+        c(
+          0,
+          .2,
+          .4,
+          .6,
+          .8,
+          1
+        ),
+      
+      na.rm=TRUE,
+      
+      ci=FALSE
+      
+    )
+  
+  
+  
+  q_values_i <-
+    
+    sort(
+      
+      unique(
+        
+        as.numeric(
+          coef(qcut_i)
+        )
+        
+      )
+      
+    )
+  
+  
+  
+  dat_i <-
+    
+    dat_i %>%
+    
+    mutate(
+      
+      sleep_rhythm_index_quintile =
+        
+        cut(
+          
+          sleep_rhythm_disruption_index,
+          
+          breaks=q_values_i,
+          
+          include.lowest=TRUE,
+          
+          labels=FALSE
+          
+        )
+      
+    )
+  
+  
+  
+  analysis_list[[i]] <- dat_i
+  
+  
+}
+
+
+
+# ==============================================================================
+# QC
+# ==============================================================================
+
+
+qc <- map_dfr(
+  
+  seq_along(analysis_list),
+  
+  function(i){
+    
+    
+    dat <- analysis_list[[i]]
+    
+    
+    tibble(
+      
+      imputation=i,
+      
+      N=nrow(dat),
+      
+      exposure_missing=
+        sum(
+          is.na(
+            dat$sleep_rhythm_disruption_index
+          )
+        ),
+      
+      mean_index=
+        mean(
+          dat$sleep_rhythm_disruption_index,
+          na.rm=TRUE
+        ),
+      
+      SD_index=
+        sd(
+          dat$sleep_rhythm_disruption_index,
+          na.rm=TRUE
+        ),
+      
+      quintile_missing=
+        sum(
+          is.na(
+            dat$sleep_rhythm_index_quintile
+          )
+        )
+      
+    )
+    
+    
+  }
+  
+)
+
+
+
+print(qc)
+
+
+
+write.csv(
+  
+  qc,
+  
+  file.path(
+    qc_dir,
+    "Step18_FINAL_sleep_rhythm_MI_QC.csv"
+  ),
+  
+  row.names=FALSE
+  
+)
+
+
+
+# ==============================================================================
+# Save
+# ==============================================================================
+
+
+saveRDS(
+  
+  analysis_list,
+  
+  out_file
+  
+)
+
+
+
+cat("\n")
+cat("====================================\n")
+cat("STEP18 FINAL COMPLETE\n")
+cat("Output:\n")
+cat(out_file)
+cat("\n")
+cat("====================================\n")
+
+################################################################################
+# STEP19 FINAL
+# NHANES survey-weighted logistic regression
+# Standardized sleep rhythm disruption index and depressive symptoms
+#
+# Main exposure: sleep_rhythm_index_z
+# Sensitivity: quintile categorical analysis
+# 20 MI + NHANES complex survey + Rubin finite-df pooling
+################################################################################
+
+rm(list=ls())
+
+library(tidyverse)
+library(survey)
+
+options(survey.lonely.psu="adjust")
+
+# ==============================================================================
+# 1. PATH + DATA
+# ==============================================================================
+
+root_dir <- "D:/code"
+input_file <- file.path(root_dir,"18.MI_sleep_rhythm_analysis_list_FINAL.rds")
+out_dir <- file.path(root_dir,"Step19_sleep_rhythm_depression_results")
+dir.create(out_dir,recursive=TRUE,showWarnings=FALSE)
+
+if(!file.exists(input_file)) stop("Cannot find: ",input_file)
+
+analysis_list <- lapply(readRDS(input_file),as.data.frame)
+M <- length(analysis_list)
+if(M!=20) stop("Expected 20 MI datasets; found ",M)
+
+cat("\n============================================================\n")
+cat("STEP19 FINAL — MI-POOLED MAIN ANALYSIS\n")
+cat("============================================================\n")
+cat("MI datasets:",M,"| N per MI:",nrow(analysis_list[[1]]),"\n")
+
+# ==============================================================================
+# 2. EXPOSURE + QUINTILE QC
+#    Step18 z-variable is retained when available; otherwise reconstructed.
+# ==============================================================================
+
+analysis_list <- lapply(seq_len(M),function(m){
+  dat <- analysis_list[[m]]
+  
+  if(!"sleep_rhythm_disruption_index"%in%names(dat))
+    stop("Missing sleep_rhythm_disruption_index in MI ",m)
+  
+  if(!"sleep_rhythm_index_z"%in%names(dat))
+    dat$sleep_rhythm_index_z <- as.numeric(scale(dat$sleep_rhythm_disruption_index))
+  
+  if(!"sleep_rhythm_index_quintile"%in%names(dat))
+    stop("Missing sleep_rhythm_index_quintile in MI ",m)
+  
+  dat$sleep_rhythm_index_quintile <- factor(
+    dat$sleep_rhythm_index_quintile,
+    levels=1:5,labels=paste0("Q",1:5)
+  )
+  
+  dat
+})
+
+# non-imputed exposure should be identical across MI datasets
+for(m in 2:M){
+  if(!isTRUE(all.equal(
+    analysis_list[[1]]$sleep_rhythm_index_z,
+    analysis_list[[m]]$sleep_rhythm_index_z,
+    check.attributes=FALSE
+  ))) stop("sleep_rhythm_index_z differs across MI datasets.")
+}
+
+cat("Exposure / quintile QC: PASS\n")
+
+# ==============================================================================
+# 3. VARIABLES + MODELS
+# ==============================================================================
+
+outcome <- "PHQ9_depression_above_10"
+main_exposure <- "sleep_rhythm_index_z"
+quintile_exposure <- "sleep_rhythm_index_quintile"
+
+cov_model1 <- c("RIDAGEYR","sex")
+cov_model2 <- c(cov_model1,"race_ethnicity","education","INDFMPIR")
+cov_model3 <- c(cov_model2,"BMI_value","MET_total","sedentary_min",
+                "smoke_status","Alcohol_Status")
+cov_model4 <- c(cov_model3,"diabetes_or_prediabetes","htn_status","work_status")
+
+models <- list(
+  Model1_age_sex=cov_model1,
+  Model2_socioeconomic=cov_model2,
+  Model3_lifestyle=cov_model3,
+  Model4_full=cov_model4
+)
+
+required <- unique(c(
+  "SDMVPSU","SDMVSTRA","mec_adj",outcome,
+  main_exposure,quintile_exposure,cov_model4
+))
+
+for(m in seq_len(M)){
+  dat <- analysis_list[[m]]
+  miss <- setdiff(required,names(dat))
+  if(length(miss)>0) stop("MI ",m," missing: ",paste(miss,collapse=", "))
+  if(anyNA(dat[,required,drop=FALSE])) stop("Residual analysis missingness in MI ",m)
+  if(any(!is.finite(dat$mec_adj))||any(dat$mec_adj<=0))
+    stop("Invalid survey weight in MI ",m)
+}
+
+factor_vars <- c("sex","race_ethnicity","education","smoke_status",
+                 "Alcohol_Status","diabetes_or_prediabetes","htn_status","work_status")
+numeric_vars <- c("RIDAGEYR","INDFMPIR","BMI_value","MET_total","sedentary_min")
+
+if(any(!sapply(analysis_list[[1]][factor_vars],is.factor)))
+  stop("One or more categorical covariates are not factors.")
+if(any(!sapply(analysis_list[[1]][numeric_vars],is.numeric)))
+  stop("One or more continuous covariates are not numeric.")
+
+cat("Outcome / Model 1–4 / class QC: PASS\n")
+
+# ==============================================================================
+# 4. SURVEY LOGISTIC FUNCTION
+# ==============================================================================
+
+run_svy_logistic <- function(dat,exposure,covariates){
+  
+  design <- svydesign(
+    id=~SDMVPSU,strata=~SDMVSTRA,weights=~mec_adj,
+    nest=TRUE,data=dat
+  )
+  
+  f <- as.formula(
+    paste(outcome,"~",paste(c(exposure,covariates),collapse="+"))
+  )
+  
+  fit <- svyglm(f,design=design,family=quasibinomial())
+  est <- summary(fit)$coef
+  
+  tibble(
+    term=rownames(est),
+    beta=est[,1],
+    SE=est[,2],
+    complete_df=fit$df.residual,
+    OR=exp(beta),
+    CI_lower=exp(beta-qt(.975,df=complete_df)*SE),
+    CI_upper=exp(beta+qt(.975,df=complete_df)*SE),
+    p_value=2*pt(-abs(beta/SE),df=complete_df)
+  )
+}
+
+# ==============================================================================
+# 5. MAIN MODELS — 20 MI × 4 MODELS
+# ==============================================================================
+
+all_results <- list()
+counter <- 1
+
+for(m in seq_along(analysis_list)){
+  cat("Running MI dataset:",m,"\n")
+  
+  for(model_name in names(models)){
+    res <- run_svy_logistic(
+      analysis_list[[m]],main_exposure,models[[model_name]]
+    )
+    res$MI <- m
+    res$Model <- model_name
+    all_results[[counter]] <- res
+    counter <- counter+1
+  }
+}
+
+results_MI <- bind_rows(all_results)
+
+write.csv(
+  results_MI,
+  file.path(out_dir,"Step19_MI_standardized_index_individual_results.csv"),
+  row.names=FALSE
+)
+
+# ==============================================================================
+# 6. RUBIN POOLING — FINITE DEGREES OF FREEDOM
+# ==============================================================================
+
+rubin_pool <- function(df,group_vars){
+  
+  df %>%
+    group_by(across(all_of(group_vars))) %>%
+    summarise(
+      m=n(),
+      beta_mean=mean(beta),
+      within_var=mean(SE^2),
+      between_var=var(beta),
+      complete_df=mean(complete_df),
+      .groups="drop"
+    ) %>%
+    mutate(
+      total_var=within_var+(1+1/m)*between_var,
+      pooled_SE=sqrt(total_var),
+      
+      # Rubin/Barnard-Rubin finite-df inference
+      lambda=ifelse(
+        total_var>0,
+        (1+1/m)*between_var/total_var,
+        0
+      ),
+      
+      df_old=ifelse(
+        lambda>0,
+        (m-1)/(lambda^2),
+        Inf
+      ),
+      
+      df_obs=ifelse(
+        complete_df>0,
+        ((complete_df+1)/(complete_df+3))*complete_df*(1-lambda),
+        Inf
+      ),
+      
+      df=ifelse(
+        is.finite(df_old)&is.finite(df_obs),
+        1/(1/df_old+1/df_obs),
+        ifelse(is.finite(df_old),df_old,df_obs)
+      ),
+      
+      crit=qt(.975,df=df),
+      OR=exp(beta_mean),
+      CI_lower=exp(beta_mean-crit*pooled_SE),
+      CI_upper=exp(beta_mean+crit*pooled_SE),
+      p_value=2*pt(-abs(beta_mean/pooled_SE),df=df)
+    )
+}
+
+pooled_results <- rubin_pool(
+  results_MI,
+  c("Model","term")
+)
+
+write.csv(
+  pooled_results,
+  file.path(out_dir,"Step19_MI_standardized_index_pooled_OR_results.csv"),
+  row.names=FALSE
+)
+
+cat("Main-model Rubin pooling: PASS\n")
+
+# ==============================================================================
+# 7. QUINTILE SENSITIVITY — MODEL 4
+# ==============================================================================
+
+quintile_results <- list()
+
+for(m in seq_along(analysis_list)){
+  
+  dat <- analysis_list[[m]]
+  
+  design <- svydesign(
+    id=~SDMVPSU,strata=~SDMVSTRA,weights=~mec_adj,
+    nest=TRUE,data=dat
+  )
+  
+  fit <- svyglm(
+    as.formula(
+      paste(
+        outcome,"~",quintile_exposure,"+",
+        paste(cov_model4,collapse="+")
+      )
+    ),
+    design=design,
+    family=quasibinomial()
+  )
+  
+  est <- summary(fit)$coef
+  
+  quintile_results[[m]] <- tibble(
+    term=rownames(est),
+    beta=est[,1],
+    SE=est[,2],
+    complete_df=fit$df.residual,
+    p_value=est[,4],
+    MI=m,
+    OR=exp(beta),
+    CI_lower=exp(beta-qt(.975,df=complete_df)*SE),
+    CI_upper=exp(beta+qt(.975,df=complete_df)*SE)
+  )
+}
+
+quintile_results <- bind_rows(quintile_results)
+
+write.csv(
+  quintile_results,
+  file.path(out_dir,"Step19_quintile_factor_sensitivity_results.csv"),
+  row.names=FALSE
+)
+
+# ==============================================================================
+# 8. RUBIN POOLING — QUINTILES
+# ==============================================================================
+
+quintile_pooled_results <- quintile_results %>%
+  filter(grepl("sleep_rhythm_index_quintile",term)) %>%
+  rubin_pool(group_vars="term")
+
+write.csv(
+  quintile_pooled_results,
+  file.path(out_dir,"Step19_quintile_factor_MI_pooled_OR_results.csv"),
+  row.names=FALSE
+)
+
+cat("Quintile Rubin pooling: PASS\n")
+
+# ==============================================================================
+# 9. FINAL QC
+# ==============================================================================
+
+main_final <- pooled_results %>%
+  filter(term==main_exposure) %>%
+  select(Model,OR,CI_lower,CI_upper,p_value,df)
+
+if(nrow(main_final)!=4)
+  stop("Expected four pooled main-exposure estimates.")
+
+if(any(!is.finite(unlist(main_final[,-1]))))
+  stop("Non-finite pooled main results.")
+
+print(main_final)
+
+expected <- c(
+  file.path(out_dir,"Step19_MI_standardized_index_individual_results.csv"),
+  file.path(out_dir,"Step19_MI_standardized_index_pooled_OR_results.csv"),
+  file.path(out_dir,"Step19_quintile_factor_sensitivity_results.csv"),
+  file.path(out_dir,"Step19_quintile_factor_MI_pooled_OR_results.csv")
+)
+
+if(any(!file.exists(expected))) stop("One or more Step19 outputs are missing.")
+
+cat("\n============================================\n")
+cat("STEP19 FINAL: PASS\n")
+cat("Main exposure: per SD increase\n")
+cat("Outcome: PHQ-9 >=10\n")
+cat("MI datasets:",M,"\n")
+cat("Survey-weighted logistic regression: PASS\n")
+cat("Rubin finite-df pooling: PASS\n")
+cat("Quintile sensitivity: PASS\n")
+cat("============================================\n")
+
+
+################################################################################
+# FIGURE 3a FINAL
+# Forest plot — standardized sleep rhythm disruption index
+# Keep original style / paths / dimensions / colors
+################################################################################
+
+rm(list=ls())
+
+library(tidyverse)
+library(ggplot2)
+
+# ==============================================================================
+# 1. PATH + DATA
+# ==============================================================================
+
+result_file <-
+  "D:/code/Step19_sleep_rhythm_depression_results/Step19_MI_standardized_index_pooled_OR_results.csv"
+
+out_dir <- "D:/code/Figure3a_final_color"
+dir.create(out_dir,recursive=TRUE,showWarnings=FALSE)
+
+if(!file.exists(result_file)) stop("Cannot find: ",result_file)
+
+res <- read.csv(result_file,stringsAsFactors=FALSE)
+
+plot_df <- res %>%
+  filter(term=="sleep_rhythm_index_z") %>%
+  mutate(
+    Model=factor(
+      Model,
+      levels=c(
+        "Model1_age_sex",
+        "Model2_socioeconomic",
+        "Model3_lifestyle",
+        "Model4_full"
+      ),
+      labels=c("Model 1","Model 2","Model 3","Model 4")
+    ),
+    OR_CI=paste0(
+      sprintf("%.2f",OR)," (",
+      sprintf("%.2f",CI_lower),"–",
+      sprintf("%.2f",CI_upper),")"
+    )
+  ) %>%
+  arrange(Model)
+
+if(nrow(plot_df)!=4) stop("Figure 3a requires exactly four model estimates.")
+if(any(!is.finite(plot_df$OR))||
+   any(!is.finite(plot_df$CI_lower))||
+   any(!is.finite(plot_df$CI_upper)))
+  stop("Non-finite Figure 3a estimates.")
+
+plot_df$y_pos <- seq(nrow(plot_df),1,by=-1)
+
+# ==============================================================================
+# 2. LAYOUT + COLORS
+# ==============================================================================
+
+X_MIN <- 0.75
+X_MAX <- 1.85
+X_TEXT <- 1.55
+y_header <- nrow(plot_df)+0.7
+
+forest_color <- "#0072B2"
+point_color <- "#003F5C"
+
+# ==============================================================================
+# 3. CORE FOREST — ORIGINAL FORMAT
+# ==============================================================================
+
+p_base <- ggplot(plot_df,aes(x=OR,y=y_pos))+
+  geom_vline(
+    xintercept=1,linetype="dashed",
+    linewidth=0.55,color="grey50"
+  )+
+  geom_errorbar(
+    aes(xmin=CI_lower,xmax=CI_upper),
+    orientation="y",
+    width=0.16,
+    linewidth=0.85,
+    color=forest_color
+  )+
+  geom_point(
+    shape=16,size=3.0,color=point_color
+  )+
+  scale_y_continuous(
+    breaks=plot_df$y_pos,
+    labels=plot_df$Model,
+    limits=c(0.3,nrow(plot_df)+1),
+    expand=c(0,0)
+  )+
+  scale_x_continuous(
+    limits=c(X_MIN,X_MAX),
+    breaks=c(0.8,1.0,1.2,1.4,1.6)
+  )+
+  labs(
+    x="Odds ratio",
+    y=NULL
+  )+
+  theme_classic(base_size=11)+
+  theme(
+    axis.text.y=element_text(size=11,color="black"),
+    axis.text.x=element_text(size=9.5,color="black"),
+    axis.title.x=element_text(size=10),
+    axis.ticks.y=element_blank(),
+    legend.position="none"
+  )
+
+# ==============================================================================
+# 4. CLEAN VERSION
+# ==============================================================================
+
+p_clean <- p_base
+print(p_clean)
+
+ggsave(
+  file.path(out_dir,"Figure3a_clean.tiff"),
+  p_clean,
+  width=5.2,height=3.2,units="in",
+  dpi=600,compression="lzw",bg="white"
+)
+
+# ==============================================================================
+# 5. OR (95% CI) VERSION
+# ==============================================================================
+
+p_or <- p_base+
+  annotate(
+    "text",
+    x=X_TEXT,y=y_header,
+    label="OR (95% CI)",
+    hjust=0,fontface="bold",size=3.8
+  )+
+  geom_text(
+    data=plot_df,
+    aes(x=X_TEXT,y=y_pos,label=OR_CI),
+    hjust=0,size=3.5,color="black"
+  )+
+  coord_cartesian(
+    xlim=c(X_MIN,1.95),
+    clip="off"
+  )+
+  theme(
+    plot.margin=margin(10,90,10,10)
+  )
+
+print(p_or)
+
+ggsave(
+  file.path(out_dir,"Figure3a_OR_CI.tiff"),
+  p_or,
+  width=7.0,height=3.2,units="in",
+  dpi=600,compression="lzw",bg="white"
+)
+
+ggsave(
+  file.path(out_dir,"Figure3a_OR_CI.pdf"),
+  p_or,
+  width=7.0,height=3.2,units="in",
+  device=cairo_pdf,bg="white"
+)
+
+cat("\n=================================\n")
+cat("Figure 3a completed successfully\n")
+cat("Source: final finite-df MI-pooled Step19 results\n")
+cat("Color forest plot generated\n")
+cat("=================================\n")
+
+################################################################################
+# STEP20 RCS MI FINAL
+#
+# Continuous standardized sleep rhythm disruption index
+# Restricted cubic spline analysis
+#
+# Exposure: sleep_rhythm_index_z
+# Outcome : PHQ9_depression_above_10
+#
+# MI + NHANES complex survey
+# Rubin full-covariance pooling
+# Barnard-Rubin finite-df CI
+# D1 pooled multivariate Wald tests
+################################################################################
+
+rm(list=ls())
+
+library(tidyverse)
+library(survey)
+library(Hmisc)
+library(ggplot2)
+
+options(survey.lonely.psu="adjust")
+
+# ==============================================================================
+# 1. PATH + LOAD
+# ==============================================================================
+
+root_dir <- "D:/code"
+input_file <- file.path(root_dir,"18.MI_sleep_rhythm_analysis_list_FINAL.rds")
+out_dir <- file.path(root_dir,"Step20_RCS_MI_FINAL_v8")
+dir.create(out_dir,recursive=TRUE,showWarnings=FALSE)
+
+if(!file.exists(input_file)) stop("Cannot find: ",input_file)
+
+MI_list <- readRDS(input_file)
+M <- length(MI_list)
+
+cat("\n============================================================\n")
+cat("STEP20 RCS MI FINAL\n")
+cat("============================================================\n")
+cat("MI datasets:",M,"\n")
+
+if(M<2) stop("At least two imputed datasets are required.")
+
+# ==============================================================================
+# 2. VARIABLES
+# ==============================================================================
+
+exposure <- "sleep_rhythm_index_z"
+outcome <- "PHQ9_depression_above_10"
+
+covariates <- c(
+  "RIDAGEYR","sex","race_ethnicity","education","INDFMPIR",
+  "BMI_value","MET_total","sedentary_min","smoke_status","Alcohol_Status",
+  "diabetes_or_prediabetes","htn_status","work_status"
+)
+
+design_vars <- c("SDMVPSU","SDMVSTRA","mec_adj")
+required_vars <- c(exposure,outcome,covariates,design_vars)
+
+# ==============================================================================
+# 3. VARIABLE / FACTOR / EXPOSURE QC
+# ==============================================================================
+
+qc_missing <- map_dfr(seq_along(MI_list),function(i){
+  miss <- setdiff(required_vars,names(MI_list[[i]]))
+  data.frame(MI=i,missing=if(length(miss)==0) "" else paste(miss,collapse=" | "))
+})
+
+write.csv(qc_missing,file.path(out_dir,"Step20_variable_QC.csv"),row.names=FALSE)
+if(any(qc_missing$missing!="")) stop("Required variables missing in one or more MI datasets.")
+cat("Variable QC passed.\n")
+
+categorical_vars <- c(
+  "sex","race_ethnicity","education","smoke_status",
+  "Alcohol_Status","diabetes_or_prediabetes","htn_status","work_status"
+)
+
+factor_qc <- expand.grid(
+  MI=seq_along(MI_list),variable=categorical_vars,stringsAsFactors=FALSE
+)
+
+factor_qc$is_factor <- mapply(
+  function(i,v) is.factor(MI_list[[i]][[v]]),
+  factor_qc$MI,factor_qc$variable
+)
+
+write.csv(factor_qc,file.path(out_dir,"Step20_factor_QC.csv"),row.names=FALSE)
+if(any(!factor_qc$is_factor)) stop("One or more categorical covariates are not factors.")
+cat("Factor QC passed.\n")
+
+exposure_qc <- tibble(
+  MI=seq_along(MI_list),
+  N=sapply(MI_list,function(x) sum(!is.na(x[[exposure]]))),
+  Mean=sapply(MI_list,function(x) mean(x[[exposure]],na.rm=TRUE)),
+  SD=sapply(MI_list,function(x) sd(x[[exposure]],na.rm=TRUE)),
+  Median=sapply(MI_list,function(x) median(x[[exposure]],na.rm=TRUE))
+)
+
+write.csv(exposure_qc,file.path(out_dir,"Step20_exposure_QC.csv"),row.names=FALSE)
+print(exposure_qc)
+
+for(i in 2:M){
+  if(!isTRUE(all.equal(
+    MI_list[[1]][[exposure]],MI_list[[i]][[exposure]],
+    check.attributes=FALSE
+  ))) stop("Exposure differs across MI datasets.")
+}
+
+# ==============================================================================
+# 4. COMMON KNOTS + REFERENCE
+# ==============================================================================
+
+all_x <- unlist(lapply(MI_list,function(x) x[[exposure]]))
+
+knots <- as.numeric(
+  quantile(all_x,probs=c(.05,.35,.65,.95),na.rm=TRUE,names=FALSE)
+)
+
+reference_value <- median(all_x,na.rm=TRUE)
+
+knot_table <- data.frame(
+  Position=c("5th percentile","35th percentile","65th percentile","95th percentile"),
+  Knot=knots
+)
+
+write.csv(knot_table,file.path(out_dir,"Step20_RCS_knots.csv"),row.names=FALSE)
+write.csv(data.frame(Reference=reference_value),
+          file.path(out_dir,"Step20_reference.csv"),row.names=FALSE)
+
+cat("\nKnots:\n"); print(knot_table)
+cat("\nReference:",reference_value,"\n")
+
+# ==============================================================================
+# 5. RCS BASIS
+# ==============================================================================
+
+make_rcs <- function(dat){
+  R <- as.data.frame(
+    Hmisc::rcspline.eval(dat[[exposure]],knots=knots,inclx=TRUE)
+  )
+  names(R) <- paste0("RCS",seq_len(ncol(R)))
+  bind_cols(dat,R)
+}
+
+# ==============================================================================
+# 6. FIT 20 SURVEY-WEIGHTED RCS MODELS
+# ==============================================================================
+
+model_list <- beta_list <- vcov_list <- vector("list",M)
+
+for(i in seq_len(M)){
+  
+  cat("Running MI:",i,"\n")
+  dat <- make_rcs(MI_list[[i]])
+  rcs_vars <- grep("^RCS",names(dat),value=TRUE)
+  
+  design <- svydesign(
+    id=~SDMVPSU,strata=~SDMVSTRA,weights=~mec_adj,
+    nest=TRUE,data=dat
+  )
+  
+  formula_rcs <- as.formula(
+    paste(outcome,"~",paste(c(rcs_vars,covariates),collapse="+"))
+  )
+  
+  fit <- svyglm(
+    formula_rcs,design=design,family=quasibinomial()
+  )
+  
+  model_list[[i]] <- fit
+  beta_list[[i]] <- coef(fit)
+  vcov_list[[i]] <- vcov(fit)
+}
+
+cat("\nAll MI RCS models fitted.\n")
+
+saveRDS(
+  model_list,
+  file.path(out_dir,"Step20_MI_RCS_models.rds")
+)
+
+# ==============================================================================
+# 7. MODEL / COEFFICIENT / DF QC
+# ==============================================================================
+
+term_list <- lapply(beta_list,names)
+
+if(!all(vapply(
+  term_list,identical,logical(1),term_list[[1]]
+))) stop("Coefficient structure differs across MI datasets.")
+
+cat("Coefficient structure QC passed.\n")
+
+complete_df <- sapply(model_list,function(x) x$df.residual)
+
+if(any(!is.finite(complete_df))||any(complete_df<=4))
+  stop("Invalid complete-data residual degrees of freedom.")
+
+df_com <- min(complete_df)
+
+cat("Complete-data residual df:",paste(unique(complete_df),collapse=", "),"\n")
+cat("Finite-df reference used:",df_com,"\n")
+
+# ==============================================================================
+# 8. FULL-COVARIANCE RUBIN POOLING
+# ==============================================================================
+
+terms <- names(beta_list[[1]])
+beta_matrix <- do.call(cbind,beta_list)
+beta_mean <- rowMeans(beta_matrix)
+names(beta_mean) <- terms
+
+W <- Reduce("+",vcov_list)/M
+
+B <- matrix(
+  0,nrow=length(terms),ncol=length(terms),
+  dimnames=list(terms,terms)
+)
+
+for(i in seq_len(M)){
+  d <- beta_list[[i]]-beta_mean
+  B <- B+d%*%t(d)
+}
+
+B <- B/(M-1)
+Tmat <- W+(1+1/M)*B
+rownames(Tmat) <- colnames(Tmat) <- terms
+
+saveRDS(
+  Tmat,
+  file.path(out_dir,"Step20_RCS_pooled_variance.rds")
+)
+
+# ==============================================================================
+# 9. SCALAR BARNARD-RUBIN POOLING
+#    Same finite-df principle as final STEP19
+# ==============================================================================
+
+pool_scalar_BR <- function(Q,U,dfcom){
+  
+  m <- length(Q)
+  qbar <- mean(Q)
+  ubar <- mean(U)
+  b <- if(m>1) var(Q) else 0
+  total <- ubar+(1+1/m)*b
+  
+  if(!is.finite(total)||total<0) stop("Invalid Rubin total variance.")
+  
+  se <- sqrt(total)
+  
+  if(total==0){
+    return(c(
+      estimate=qbar,SE=0,df=dfcom,
+      lower=qbar,upper=qbar,p=NA_real_
+    ))
+  }
+  
+  lambda <- (1+1/m)*b/total
+  
+  df_old <- if(lambda>0) (m-1)/(lambda^2) else Inf
+  
+  df_obs <- ((dfcom+1)/(dfcom+3))*dfcom*(1-lambda)
+  
+  df <- if(is.finite(df_old)){
+    1/(1/df_old+1/df_obs)
+  } else {
+    df_obs
+  }
+  
+  crit <- qt(.975,df=df)
+  
+  c(
+    estimate=qbar,
+    SE=se,
+    df=df,
+    lower=qbar-crit*se,
+    upper=qbar+crit*se,
+    p=2*pt(-abs(qbar/se),df=df)
+  )
+}
+
+# ==============================================================================
+# 10. POOLED COEFFICIENT TABLE — FINITE DF
+# ==============================================================================
+
+coef_pool <- lapply(seq_along(terms),function(j){
+  
+  Q <- beta_matrix[j,]
+  U <- sapply(vcov_list,function(V) V[j,j])
+  z <- pool_scalar_BR(Q,U,df_com)
+  
+  data.frame(
+    term=terms[j],
+    beta=z["estimate"],
+    SE=z["SE"],
+    OR=exp(z["estimate"]),
+    lower95=exp(z["lower"]),
+    upper95=exp(z["upper"])
+  )
+}) %>% bind_rows()
+
+write.csv(
+  coef_pool,
+  file.path(out_dir,"Step20_RCS_pooled_coefficients.csv"),
+  row.names=FALSE
+)
+
+# ==============================================================================
+# 11. RCS TERMS
+# ==============================================================================
+
+rcs_terms <- grep("^RCS",terms,value=TRUE)
+
+if(length(rcs_terms)<2)
+  stop("Insufficient number of RCS basis terms.")
+
+rcs_idx <- match(rcs_terms,terms)
+
+beta_rcs <- beta_mean[rcs_terms]
+V_rcs <- Tmat[rcs_terms,rcs_terms,drop=FALSE]
+
+# ==============================================================================
+# 12. D1 MULTIVARIATE MI WALD TEST
+#
+# Li, Raghunathan & Rubin D1 method with Reiter finite-sample df adjustment.
+# Overall: all RCS terms = 0
+# Nonlinear: all RCS terms except first linear component = 0
+# ==============================================================================
+
+D1_test <- function(Qhat,Uhat,dfcom){
+  
+  k <- nrow(Qhat)
+  m <- ncol(Qhat)
+  
+  Qbar <- rowMeans(Qhat)
+  Ubar <- apply(Uhat,c(1,2),mean)
+  Bmat <- stats::cov(t(Qhat))
+  
+  r <- (1+1/m)*sum(diag(Bmat%*%solve(Ubar)))/k
+  Ttilde <- (1+r)*Ubar
+  
+  Fval <- as.numeric(
+    t(Qbar)%*%solve(Ttilde,Qbar)/k
+  )
+  
+  t0 <- k*(m-1)
+  
+  if(r<=.Machine$double.eps){
+    df2 <- ((dfcom+1)/(dfcom+3))*dfcom
+  } else {
+    
+    a <- r*t0/(t0-2)
+    vstar <- ((dfcom+1)/(dfcom+3))*dfcom
+    
+    c0 <- 1/(t0-4)
+    c1 <- vstar-2*(1+a)
+    c2 <- vstar-4*(1+a)
+    
+    z <- 1/c2 +
+      c0*(a^2*c1/((1+a)^2*c2)) +
+      c0*(8*a^2*c1/((1+a)*c2^2)+4*a^2/((1+a)*c2)) +
+      c0*(4*a^2/(c2*c1)+16*a^2*c1/c2^3) +
+      c0*(8*a^2/c2^2)
+    
+    df2 <- 4+1/z
+  }
+  
+  p <- pf(Fval,df1=k,df2=df2,lower.tail=FALSE)
+  
+  list(
+    F=Fval,
+    df1=k,
+    df2=df2,
+    p=p,
+    riv=r
+  )
+}
+
+# Per-imputation spline estimates/covariances
+Q_all <- beta_matrix[rcs_idx,,drop=FALSE]
+
+U_all <- array(
+  NA_real_,
+  dim=c(length(rcs_idx),length(rcs_idx),M)
+)
+
+for(i in seq_len(M)){
+  U_all[,,i] <- vcov_list[[i]][rcs_idx,rcs_idx,drop=FALSE]
+}
+
+# Overall association
+test_overall <- D1_test(
+  Qhat=Q_all,
+  Uhat=U_all,
+  dfcom=df_com
+)
+
+# Nonlinear association
+Q_nonlin <- Q_all[-1,,drop=FALSE]
+U_nonlin <- U_all[-1,-1,,drop=FALSE]
+
+test_nonlin <- D1_test(
+  Qhat=Q_nonlin,
+  Uhat=U_nonlin,
+  dfcom=df_com
+)
+
+# Keep original columns for downstream compatibility; add finite-df details
+p_table <- data.frame(
+  Test=c("Overall association","Nonlinear association"),
+  Wald=c(
+    test_overall$F*test_overall$df1,
+    test_nonlin$F*test_nonlin$df1
+  ),
+  df=c(test_overall$df1,test_nonlin$df1),
+  P_value=c(test_overall$p,test_nonlin$p),
+  P_formatted=c(
+    ifelse(test_overall$p<0.001,"<0.001",sprintf("%.3f",test_overall$p)),
+    ifelse(test_nonlin$p<0.001,"<0.001",sprintf("%.3f",test_nonlin$p))
+  ),
+  F_value=c(test_overall$F,test_nonlin$F),
+  df2=c(test_overall$df2,test_nonlin$df2),
+  RIV=c(test_overall$riv,test_nonlin$riv),
+  Method="D1 finite-df MI Wald test"
+)
+
+write.csv(
+  p_table,
+  file.path(out_dir,"Step20_RCS_P_values.csv"),
+  row.names=FALSE
+)
+
+cat("\nRCS tests:\n")
+print(p_table)
+
+p_overall <- test_overall$p
+p_nonlin <- test_nonlin$p
+
+# ==============================================================================
+# 13. PREDICTION GRID — UNCHANGED P1-P99 DISPLAY RANGE
+# ==============================================================================
+
+plot_limits <- as.numeric(
+  quantile(
+    all_x,
+    probs=c(.01,.99),
+    na.rm=TRUE,
+    names=FALSE
+  )
+)
+
+x_seq <- seq(
+  plot_limits[1],
+  plot_limits[2],
+  length.out=300
+)
+
+# ==============================================================================
+# 14. PREDICTION RCS BASIS
+# ==============================================================================
+
+Xnew <- as.matrix(
+  Hmisc::rcspline.eval(
+    x_seq,
+    knots=knots,
+    inclx=TRUE
+  )
+)
+
+Xnew <- Xnew[,seq_along(rcs_terms),drop=FALSE]
+
+Xref <- as.numeric(
+  Hmisc::rcspline.eval(
+    reference_value,
+    knots=knots,
+    inclx=TRUE
+  )
+)
+
+Xref <- Xref[seq_along(rcs_terms)]
+
+Xdiff <- sweep(
+  Xnew,
+  MARGIN=2,
+  STATS=Xref,
+  FUN="-"
+)
+
+# ==============================================================================
+# 15. FINITE-DF MI-POOLED CONTRAST PREDICTION
+#
+# Point estimate is unchanged.
+# For each x, contrast estimate and variance are computed within each MI,
+# then pooled using Rubin + Barnard-Rubin finite df.
+# ==============================================================================
+
+beta_rcs_list <- lapply(
+  beta_list,
+  function(b) b[rcs_terms]
+)
+
+V_rcs_list <- lapply(
+  vcov_list,
+  function(V) V[rcs_terms,rcs_terms,drop=FALSE]
+)
+
+curve_list <- lapply(seq_len(nrow(Xdiff)),function(j){
+  
+  d <- Xdiff[j,]
+  
+  Q <- sapply(
+    beta_rcs_list,
+    function(b) sum(d*b)
+  )
+  
+  U <- sapply(
+    V_rcs_list,
+    function(V) as.numeric(t(d)%*%V%*%d)
+  )
+  
+  z <- pool_scalar_BR(Q,U,df_com)
+  
+  data.frame(
+    exposure=x_seq[j],
+    log_OR=z["estimate"],
+    SE=z["SE"],
+    OR=exp(z["estimate"]),
+    lower95=exp(z["lower"]),
+    upper95=exp(z["upper"])
+  )
+})
+
+curve <- bind_rows(curve_list)
+
+# Exact reference point
+reference_row <- data.frame(
+  exposure=reference_value,
+  log_OR=0,
+  SE=0,
+  OR=1,
+  lower95=1,
+  upper95=1
+)
+
+curve <- bind_rows(
+  curve,
+  reference_row
+) %>%
+  arrange(exposure)
+
+write.csv(
+  curve,
+  file.path(out_dir,"Step20_RCS_curve_data.csv"),
+  row.names=FALSE
+)
+
+# ==============================================================================
+# 16. REFERENCE QC
+# ==============================================================================
+
+ref_check <- curve[
+  which.min(abs(curve$exposure-reference_value)),
+]
+
+write.csv(
+  ref_check,
+  file.path(out_dir,"Step20_reference_curve_QC.csv"),
+  row.names=FALSE
+)
+
+cat("\nReference curve QC:\n")
+print(ref_check)
+
+if(
+  abs(ref_check$OR-1)>1e-10 ||
+  abs(ref_check$lower95-1)>1e-10 ||
+  abs(ref_check$upper95-1)>1e-10
+){
+  stop("Reference curve QC failed.")
+}
+
+# ==============================================================================
+# 17. FIGURE — UNCHANGED
+# ==============================================================================
+
+p <- ggplot(
+  curve,
+  aes(x=exposure,y=OR)
+)+
+  geom_ribbon(
+    aes(ymin=lower95,ymax=upper95),
+    fill="#0072B2",
+    alpha=0.18
+  )+
+  geom_line(
+    colour="#0072B2",
+    linewidth=1.05
+  )+
+  geom_hline(
+    yintercept=1,
+    linetype="dashed",
+    colour="grey45",
+    linewidth=0.5
+  )+
+  geom_vline(
+    xintercept=reference_value,
+    linetype="dotted",
+    colour="#D55E00",
+    linewidth=0.55
+  )+
+  scale_y_log10()+
+  labs(
+    x="Sleep rhythm disruption index (SD units)",
+    y="Odds ratio (95% CI)"
+  )+
+  theme_classic(base_size=11)+
+  theme(
+    axis.text=element_text(colour="black"),
+    axis.title=element_text(colour="black"),
+    plot.margin=margin(8,10,8,8)
+  )
+
+print(p)
+
+# ==============================================================================
+# 18. EXPORT — FILENAMES UNCHANGED
+# ==============================================================================
+
+ggsave(
+  file.path(out_dir,"Step20_RCS_curve.tiff"),
+  p,
+  width=6.5,height=4.8,units="in",
+  dpi=600,compression="lzw",bg="white"
+)
+
+ggsave(
+  file.path(out_dir,"Step20_RCS_curve.pdf"),
+  p,
+  width=6.5,height=4.8,units="in",
+  device=grDevices::cairo_pdf,
+  bg="white"
+)
+
+# ==============================================================================
+# 19. FINAL QC — ORIGINAL OUTPUT RETAINED
+# ==============================================================================
+
+final_qc <- data.frame(
+  Item=c(
+    "MI datasets",
+    "Exposure",
+    "Outcome",
+    "Knots",
+    "Reference",
+    "Plot range",
+    "Weight",
+    "PSU",
+    "Strata",
+    "Complete-data df",
+    "Overall P",
+    "Nonlinear P",
+    "MI inference"
+  ),
+  Value=c(
+    M,
+    exposure,
+    outcome,
+    paste(round(knots,4),collapse=" | "),
+    round(reference_value,4),
+    paste(round(plot_limits,4),collapse=" to "),
+    "mec_adj",
+    "SDMVPSU",
+    "SDMVSTRA",
+    round(df_com,2),
+    ifelse(p_overall<0.001,"<0.001",sprintf("%.3f",p_overall)),
+    ifelse(p_nonlin<0.001,"<0.001",sprintf("%.3f",p_nonlin)),
+    "Rubin full covariance + Barnard-Rubin scalar df + D1 joint test"
+  )
+)
+
+write.csv(
+  final_qc,
+  file.path(out_dir,"Step20_FINAL_QC.csv"),
+  row.names=FALSE
+)
+
+expected <- c(
+  file.path(out_dir,"Step20_variable_QC.csv"),
+  file.path(out_dir,"Step20_factor_QC.csv"),
+  file.path(out_dir,"Step20_exposure_QC.csv"),
+  file.path(out_dir,"Step20_RCS_knots.csv"),
+  file.path(out_dir,"Step20_reference.csv"),
+  file.path(out_dir,"Step20_MI_RCS_models.rds"),
+  file.path(out_dir,"Step20_RCS_pooled_variance.rds"),
+  file.path(out_dir,"Step20_RCS_pooled_coefficients.csv"),
+  file.path(out_dir,"Step20_RCS_P_values.csv"),
+  file.path(out_dir,"Step20_RCS_curve_data.csv"),
+  file.path(out_dir,"Step20_reference_curve_QC.csv"),
+  file.path(out_dir,"Step20_RCS_curve.tiff"),
+  file.path(out_dir,"Step20_RCS_curve.pdf"),
+  file.path(out_dir,"Step20_FINAL_QC.csv")
+)
+
+if(any(!file.exists(expected)))
+  stop("One or more STEP20 outputs are missing.")
+
+cat("\n============================================================\n")
+cat("STEP20 RCS MI FINAL: PASS\n")
+cat("Exposure: sleep_rhythm_index_z\n")
+cat("Same exposure scale as STEP19 primary analysis\n")
+cat("MI datasets:",M,"\n")
+cat("Survey-weighted Model 4: PASS\n")
+cat("Rubin full-covariance pooling: PASS\n")
+cat("Barnard-Rubin finite-df curve CI: PASS\n")
+cat("D1 finite-df overall/nonlinear tests: PASS\n")
+cat("Overall P:",ifelse(p_overall<0.001,"<0.001",sprintf("%.3f",p_overall)),"\n")
+cat("Nonlinear P:",ifelse(p_nonlin<0.001,"<0.001",sprintf("%.3f",p_nonlin)),"\n")
+cat("Output:",out_dir,"\n")
+cat("============================================================\n")
+
+################################################################################
+# STEP22 MI FINAL
+# Continuous Sleep Rhythm Disruption Index
+# Subgroup and Interaction Analysis
+#
+# Input: 18.MI_sleep_rhythm_analysis_list_FINAL.rds
+# Exposure: sleep_rhythm_index_z
+#           OR per 1-SD higher sleep rhythm disruption index
+# Outcome: PHQ9_depression_above_10
+#
+# FINAL:
+#   - 20 MI datasets
+#   - NHANES survey-weighted logistic regression
+#   - Exact STEP19 Model 4 covariates
+#   - Barnard-Rubin finite-df subgroup estimates
+#   - D1 finite-df joint tests for interaction
+#   - Raw interaction P primary; BH-FDR supplementary
+#   - Legacy filenames retained for downstream compatibility
+################################################################################
+
+rm(list=ls())
+
+library(dplyr)
+library(purrr)
+library(survey)
+library(ggplot2)
+library(patchwork)
+
+options(survey.lonely.psu="adjust")
+
+# ==============================================================================
+# 0. PATHS
+# ==============================================================================
+
+root_dir <- "D:/code"
+data_path <- file.path(root_dir,"18.MI_sleep_rhythm_analysis_list_FINAL.rds")
+out_dir <- file.path(root_dir,"Step22_MI_sleep_rhythm_subgroup_interaction_FINAL")
+fig_dir <- file.path(out_dir,"figures")
+
+dir.create(out_dir,recursive=TRUE,showWarnings=FALSE)
+dir.create(fig_dir,recursive=TRUE,showWarnings=FALSE)
+if(!file.exists(data_path)) stop("Cannot find: ",data_path)
+
+# ==============================================================================
+# 1. LOAD
+# ==============================================================================
+
+MI_list <- readRDS(data_path)
+if(!is.list(MI_list)||length(MI_list)<2) stop("Input must be a list of MI datasets.")
+
+M <- length(MI_list)
+if(M!=20) stop("Expected 20 MI datasets; found ",M)
+
+cat("Number of MI datasets:",M,"\n")
+cat("N per MI dataset:",nrow(MI_list[[1]]),"\n")
+
+# ==============================================================================
+# 2. VARIABLES — EXACT STEP19 MODEL 4
+# ==============================================================================
+
+outcome_var <- "PHQ9_depression_above_10"
+raw_exposure <- "sleep_rhythm_disruption_index"
+exposure_var <- "sleep_rhythm_index_z"
+
+all_covs <- c(
+  "RIDAGEYR","sex","race_ethnicity","education","INDFMPIR",
+  "BMI_value","MET_total","sedentary_min","smoke_status","Alcohol_Status",
+  "diabetes_or_prediabetes","htn_status","work_status"
+)
+
+design_vars <- c("SDMVPSU","SDMVSTRA","mec_adj")
+
+# ==============================================================================
+# 3. HELPERS
+# ==============================================================================
+
+format_p <- function(p){
+  if(is.na(p)) return(NA_character_)
+  if(p<0.001) return("<0.001")
+  sprintf("%.3f",p)
+}
+
+n_unique <- function(x) length(unique(stats::na.omit(x)))
+
+# Barnard-Rubin finite-df scalar pooling
+pool_scalar_BR <- function(beta,se,dfcom){
+  ok <- is.finite(beta)&is.finite(se)&is.finite(dfcom)&dfcom>0
+  beta <- beta[ok]; se <- se[ok]; dfcom <- dfcom[ok]; m <- length(beta)
+  
+  if(m<2) return(data.frame(
+    beta=NA_real_,se=NA_real_,df=NA_real_,OR=NA_real_,
+    lower95=NA_real_,upper95=NA_real_,p_value=NA_real_
+  ))
+  
+  qbar <- mean(beta); W <- mean(se^2); B <- var(beta)
+  T <- W+(1+1/m)*B
+  if(!is.finite(T)||T<=0) stop("Invalid Rubin total variance.")
+  
+  se_pool <- sqrt(T)
+  lambda <- (1+1/m)*B/T
+  df_old <- if(lambda>0) (m-1)/(lambda^2) else Inf
+  df_com <- min(dfcom)
+  df_obs <- ((df_com+1)/(df_com+3))*df_com*(1-lambda)
+  
+  df <- if(is.finite(df_old)) 1/(1/df_old+1/df_obs) else df_obs
+  crit <- qt(.975,df=df)
+  p <- 2*pt(-abs(qbar/se_pool),df=df)
+  
+  data.frame(
+    beta=qbar,se=se_pool,df=df,OR=exp(qbar),
+    lower95=exp(qbar-crit*se_pool),
+    upper95=exp(qbar+crit*se_pool),
+    p_value=p
+  )
+}
+
+# D1 finite-df multivariate MI Wald test
+D1_test <- function(Qhat,Uhat,dfcom){
+  
+  k <- nrow(Qhat); m <- ncol(Qhat)
+  if(k<1||m<2) return(list(F=NA_real_,df1=NA_real_,df2=NA_real_,p=NA_real_,riv=NA_real_))
+  
+  Qbar <- rowMeans(Qhat)
+  Ubar <- apply(Uhat,c(1,2),mean)
+  Bmat <- stats::cov(t(Qhat))
+  
+  invU <- tryCatch(solve(Ubar),error=function(e) NULL)
+  if(is.null(invU)) return(list(F=NA_real_,df1=k,df2=NA_real_,p=NA_real_,riv=NA_real_))
+  
+  r <- (1+1/m)*sum(diag(Bmat%*%invU))/k
+  Ttilde <- (1+r)*Ubar
+  invT <- tryCatch(solve(Ttilde),error=function(e) NULL)
+  if(is.null(invT)) return(list(F=NA_real_,df1=k,df2=NA_real_,p=NA_real_,riv=r))
+  
+  Fval <- as.numeric(t(Qbar)%*%invT%*%Qbar/k)
+  dfcom <- min(dfcom[is.finite(dfcom)&dfcom>0])
+  
+  t0 <- k*(m-1)
+  
+  if(r<=.Machine$double.eps){
+    df2 <- ((dfcom+1)/(dfcom+3))*dfcom
+  }else{
+    a <- r*t0/(t0-2)
+    vstar <- ((dfcom+1)/(dfcom+3))*dfcom
+    c0 <- 1/(t0-4)
+    c1 <- vstar-2*(1+a)
+    c2 <- vstar-4*(1+a)
+    
+    z <- 1/c2+
+      c0*(a^2*c1/((1+a)^2*c2))+
+      c0*(8*a^2*c1/((1+a)*c2^2)+4*a^2/((1+a)*c2))+
+      c0*(4*a^2/(c2*c1)+16*a^2*c1/c2^3)+
+      c0*(8*a^2/c2^2)
+    
+    df2 <- 4+1/z
+  }
+  
+  list(F=Fval,df1=k,df2=df2,
+       p=pf(Fval,df1=k,df2=df2,lower.tail=FALSE),riv=r)
+}
+
+# ==============================================================================
+# 4. PREPARE EACH MI DATASET
+# ==============================================================================
+
+x_all <- MI_list[[1]][[raw_exposure]]
+if(is.null(x_all)) stop("Missing exposure: ",raw_exposure)
+
+x_mean <- mean(x_all,na.rm=TRUE)
+x_sd <- sd(x_all,na.rm=TRUE)
+if(!is.finite(x_sd)||x_sd<=0) stop("Invalid SD for sleep rhythm disruption index.")
+
+# Exposure is non-imputed; verify identical across all MI datasets
+for(i in 2:M){
+  if(!isTRUE(all.equal(
+    MI_list[[1]][[raw_exposure]],
+    MI_list[[i]][[raw_exposure]],
+    check.attributes=FALSE
+  ))) stop("Raw sleep rhythm disruption index differs across MI datasets.")
+}
+
+prepare_data <- function(dat){
+  
+  # marital_status retained only because it is itself an exploratory subgroup,
+  # NOT as a Model 4 adjustment covariate.
+  req0 <- unique(c(
+    outcome_var,raw_exposure,all_covs,design_vars,
+    "marital_status","dur_wd_cat","dur_we_cat"
+  ))
+  
+  miss <- setdiff(req0,names(dat))
+  if(length(miss)>0) stop("Missing variables: ",paste(miss,collapse=", "))
+  
+  dat %>%
+    mutate(
+      sleep_rhythm_index_z=(.data[[raw_exposure]]-x_mean)/x_sd,
+      Sex_cat=factor(sex,levels=c("Male","Female")),
+      Age_cat=cut(RIDAGEYR,breaks=c(18,40,60,Inf),right=FALSE,
+                  labels=c("18-39","40-59","≥60")),
+      Race_cat=factor(race_ethnicity),
+      Education_cat=factor(education),
+      Marital_cat=factor(marital_status),
+      Smoking_cat=factor(smoke_status),
+      BMI_cat=cut(BMI_value,breaks=c(-Inf,25,30,Inf),right=FALSE,
+                  labels=c("Normal weight or below (<25)",
+                           "Overweight (25-29.9)","Obese (≥30)")),
+      Alcohol_cat=factor(Alcohol_Status),
+      Diabetes_cat=factor(diabetes_or_prediabetes),
+      Hypertension_cat=factor(htn_status),
+      Work_cat=factor(work_status),
+      PIR_cat=cut(INDFMPIR,breaks=c(-Inf,1.30,3.50,Inf),right=FALSE,
+                  labels=c("<1.30","1.30-3.49","≥3.50")),
+      Sedentary_cat=cut(sedentary_min/60,breaks=c(-Inf,6,8,Inf),right=FALSE,
+                        labels=c("<6 h/day","6-8 h/day","≥8 h/day")),
+      MET_cat=factor(
+        case_when(
+          is.na(MET_total)~NA_character_,
+          MET_total<600~"Low",
+          MET_total<=3000~"Moderate",
+          MET_total>3000~"High"
+        ),
+        levels=c("Low","Moderate","High")
+      ),
+      Dur_wd_cat=factor(as.character(dur_wd_cat),
+                        levels=c("7-9 hours","<7 hours","≥9 hours")),
+      Dur_we_cat=factor(as.character(dur_we_cat),
+                        levels=c("7-9 hours","<7 hours","≥9 hours"))
+    )
+}
+
+MI_list <- lapply(MI_list,prepare_data)
+
+cat("\nSubgroup variables prepared successfully.\n")
+cat("\nPhysical activity distribution in MI 1:\n")
+print(table(MI_list[[1]]$MET_cat,useNA="ifany"))
+cat("\nAge distribution in MI 1:\n")
+print(table(MI_list[[1]]$Age_cat,useNA="ifany"))
+cat("\nSex distribution in MI 1:\n")
+print(table(MI_list[[1]]$Sex_cat,useNA="ifany"))
+cat("\nSleep rhythm index z-score QC:\n")
+print(summary(MI_list[[1]]$sleep_rhythm_index_z))
+cat("Mean:",mean(MI_list[[1]]$sleep_rhythm_index_z,na.rm=TRUE),
+    "\nSD:",sd(MI_list[[1]]$sleep_rhythm_index_z,na.rm=TRUE),"\n")
+
+# ==============================================================================
+# 5. SUBGROUP DEFINITIONS — UNCHANGED
+# ==============================================================================
+
+all_subgroup_vars <- c(
+  "Sex_cat","Age_cat","Race_cat","Education_cat","Smoking_cat","Marital_cat",
+  "BMI_cat","Alcohol_cat","Diabetes_cat","Hypertension_cat","Work_cat",
+  "PIR_cat","Dur_wd_cat","Dur_we_cat","Sedentary_cat","MET_cat"
+)
+
+plot_subgroup_vars <- c(
+  "Sex_cat","Age_cat","BMI_cat","Dur_wd_cat","Dur_we_cat"
+)
+
+redundancy_map <- list(
+  Sex_cat="sex",Age_cat="RIDAGEYR",Race_cat="race_ethnicity",
+  Education_cat="education",Smoking_cat="smoke_status",
+  Marital_cat=NULL,BMI_cat="BMI_value",Alcohol_cat="Alcohol_Status",
+  Diabetes_cat="diabetes_or_prediabetes",
+  Hypertension_cat="htn_status",Work_cat="work_status",
+  PIR_cat="INDFMPIR",Dur_wd_cat=NULL,Dur_we_cat=NULL,
+  Sedentary_cat="sedentary_min",MET_cat="MET_total"
+)
+
+label_map <- c(
+  Sex_cat="Sex",Age_cat="Age group, years",Race_cat="Race/ethnicity",
+  Education_cat="Education",Smoking_cat="Smoking status",
+  Marital_cat="Marital status",BMI_cat="Body mass index",
+  Alcohol_cat="Alcohol consumption",Diabetes_cat="Diabetes",
+  Hypertension_cat="Hypertension",Work_cat="Work status",
+  PIR_cat="Income-to-poverty ratio",
+  Dur_wd_cat="Weekday sleep duration",
+  Dur_we_cat="Weekend sleep duration",
+  Sedentary_cat="Sedentary time",MET_cat="Physical activity"
+)
+
+# ==============================================================================
+# 6. QC
+# ==============================================================================
+
+required_vars <- unique(c(
+  outcome_var,raw_exposure,exposure_var,all_covs,design_vars,
+  all_subgroup_vars
+))
+
+missingness_audit <- bind_rows(lapply(seq_len(M),function(i){
+  data.frame(
+    MI=i,variable=required_vars,
+    n_missing=sapply(required_vars,function(v)
+      sum(is.na(MI_list[[i]][[v]])))
+  )
+}))
+
+write.csv(
+  missingness_audit,
+  file.path(out_dir,"Step22_MI_missingness_audit.csv"),
+  row.names=FALSE
+)
+
+subgroup_distribution <- bind_rows(lapply(all_subgroup_vars,function(v){
+  as.data.frame(table(MI_list[[1]][[v]],useNA="ifany")) %>%
+    transmute(subgroup=v,level=as.character(Var1),n=Freq)
+}))
+
+write.csv(
+  subgroup_distribution,
+  file.path(out_dir,"Step22_MI_subgroup_distribution.csv"),
+  row.names=FALSE
+)
+
+# ==============================================================================
+# 7. SURVEY DESIGN LIST
+# ==============================================================================
+
+design_list <- lapply(
+  MI_list,
+  function(dat)
+    svydesign(
+      id=~SDMVPSU,strata=~SDMVSTRA,weights=~mec_adj,
+      nest=TRUE,data=dat
+    )
+)
+
+# ==============================================================================
+# 8. INTERACTION ANALYSIS — D1 FINITE-DF MI JOINT TEST
+# ==============================================================================
+
+run_interaction <- function(sub_var){
+  
+  cat("Interaction:",sub_var,"\n")
+  
+  remove_vars <- c(sub_var,redundancy_map[[sub_var]])
+  clean_covs <- setdiff(all_covs,remove_vars)
+  
+  beta_int <- vcov_int <- vector("list",M)
+  df_int <- rep(NA_real_,M)
+  
+  for(i in seq_len(M)){
+    
+    dat <- MI_list[[i]]
+    valid_covs <- clean_covs[
+      sapply(clean_covs,function(v) n_unique(dat[[v]])>=2)
+    ]
+    
+    f <- as.formula(
+      paste(
+        outcome_var,"~",paste0(exposure_var,"*",sub_var),
+        if(length(valid_covs)>0)
+          paste("+",paste(valid_covs,collapse="+")) else ""
+      )
+    )
+    
+    fit <- tryCatch(
+      svyglm(f,design=design_list[[i]],family=quasibinomial()),
+      error=function(e) NULL
+    )
+    
+    if(is.null(fit))
+      return(data.frame(
+        Subgroup=sub_var,P_Interaction=NA_real_,
+        Interaction_F=NA_real_,df1=NA_real_,df2=NA_real_,RIV=NA_real_
+      ))
+    
+    beta_int[[i]] <- coef(fit)
+    vcov_int[[i]] <- vcov(fit)
+    df_int[i] <- fit$df.residual
+  }
+  
+  # Require identical coefficient structure before D1 pooling
+  if(!all(vapply(
+    beta_int,function(x) identical(names(x),names(beta_int[[1]])),logical(1)
+  ))) stop("Interaction coefficient structure differs across MI: ",sub_var)
+  
+  int_terms <- grep(
+    paste0("^",exposure_var,":|:",exposure_var,"$"),
+    names(beta_int[[1]]),value=TRUE
+  )
+  
+  if(length(int_terms)==0)
+    return(data.frame(
+      Subgroup=sub_var,P_Interaction=NA_real_,
+      Interaction_F=NA_real_,df1=NA_real_,df2=NA_real_,RIV=NA_real_
+    ))
+  
+  Qhat <- do.call(
+    cbind,
+    lapply(beta_int,function(b) b[int_terms])
+  )
+  
+  Uhat <- array(
+    NA_real_,
+    dim=c(length(int_terms),length(int_terms),M)
+  )
+  
+  for(i in seq_len(M))
+    Uhat[,,i] <- vcov_int[[i]][int_terms,int_terms,drop=FALSE]
+  
+  tst <- D1_test(Qhat,Uhat,df_int)
+  
+  data.frame(
+    Subgroup=sub_var,
+    P_Interaction=tst$p,
+    Interaction_F=tst$F,
+    df1=tst$df1,
+    df2=tst$df2,
+    RIV=tst$riv
+  )
+}
+
+interaction_summary <- map_df(all_subgroup_vars,run_interaction) %>%
+  mutate(
+    P_FDR=p.adjust(P_Interaction,method="fdr"),
+    P_raw_fmt=sapply(P_Interaction,format_p),
+    P_FDR_fmt=sapply(P_FDR,format_p)
+  )
+
+write.csv(
+  interaction_summary,
+  file.path(out_dir,"Step22_MI_CMB_interaction_summary_FDR.csv"),
+  row.names=FALSE
+)
+
+# ==============================================================================
+# 9. STRATIFIED SUBGROUP ANALYSIS — BARNARD-RUBIN FINITE DF
+# ==============================================================================
+
+run_subgroup <- function(sub_var,min_n=50){
+  
+  cat("Subgroup:",sub_var,"\n")
+  
+  levels_sub <- levels(droplevels(MI_list[[1]][[sub_var]]))
+  remove_vars <- c(sub_var,redundancy_map[[sub_var]])
+  clean_covs <- setdiff(all_covs,remove_vars)
+  
+  map_df(levels_sub,function(lvl){
+    
+    idx0 <- MI_list[[1]][[sub_var]]==lvl
+    idx0[is.na(idx0)] <- FALSE
+    
+    n_sub <- sum(idx0)
+    n_events <- sum(
+      MI_list[[1]][[outcome_var]][idx0]==1,
+      na.rm=TRUE
+    )
+    
+    if(n_sub<min_n)
+      return(data.frame(
+        Subgroup=sub_var,Level=lvl,n_unweighted=n_sub,n_events=n_events,
+        beta=NA,se=NA,df=NA,OR=NA,lower95=NA,upper95=NA,p_value=NA
+      ))
+    
+    dat0 <- MI_list[[1]][idx0,,drop=FALSE]
+    valid_covs <- clean_covs[
+      sapply(clean_covs,function(v) n_unique(dat0[[v]])>=2)
+    ]
+    
+    estimates <- ses <- dfs <- rep(NA_real_,M)
+    
+    for(i in seq_len(M)){
+      
+      idx <- MI_list[[i]][[sub_var]]==lvl
+      idx[is.na(idx)] <- FALSE
+      dsub <- subset(design_list[[i]],idx)
+      
+      f <- as.formula(
+        paste(
+          outcome_var,"~",exposure_var,
+          if(length(valid_covs)>0)
+            paste("+",paste(valid_covs,collapse="+")) else ""
+        )
+      )
+      
+      fit <- tryCatch(
+        svyglm(f,design=dsub,family=quasibinomial()),
+        error=function(e) NULL
+      )
+      
+      if(!is.null(fit)&&exposure_var%in%names(coef(fit))){
+        estimates[i] <- coef(fit)[exposure_var]
+        ses[i] <- sqrt(vcov(fit)[exposure_var,exposure_var])
+        dfs[i] <- fit$df.residual
+      }
+    }
+    
+    pooled <- pool_scalar_BR(estimates,ses,dfs)
+    
+    data.frame(
+      Subgroup=sub_var,Level=as.character(lvl),
+      n_unweighted=n_sub,n_events=n_events,
+      beta=pooled$beta,se=pooled$se,df=pooled$df,
+      OR=pooled$OR,lower95=pooled$lower95,
+      upper95=pooled$upper95,p_value=pooled$p_value
+    )
+  })
+}
+
+raw_results <- map_df(plot_subgroup_vars,run_subgroup) %>%
+  left_join(
+    interaction_summary %>% select(Subgroup,P_Interaction),
+    by="Subgroup"
+  )
+
+write.csv(
+  raw_results,
+  file.path(out_dir,"Step22_MI_CMB_subgroup_raw_results.csv"),
+  row.names=FALSE
+)
+
+# ==============================================================================
+# 10. PUBLICATION TABLES — FILENAMES UNCHANGED
+# ==============================================================================
+
+subgroup_table <- raw_results %>%
+  left_join(
+    interaction_summary %>% select(Subgroup,P_FDR),
+    by="Subgroup"
+  ) %>%
+  mutate(
+    Subgroup_Label=recode(Subgroup,!!!label_map,.default=Subgroup),
+    OR_95CI=ifelse(
+      is.na(OR),NA_character_,
+      sprintf("%.3f (%.3f-%.3f)",OR,lower95,upper95)
+    ),
+    P_value_fmt=sapply(p_value,format_p),
+    P_interaction_fmt=sapply(P_Interaction,format_p),
+    P_interaction_FDR_fmt=sapply(P_FDR,format_p)
+  ) %>%
+  transmute(
+    Subgroup=Subgroup_Label,Level,
+    N=n_unweighted,Events=n_events,
+    OR=round(OR,3),
+    Lower_95CI=round(lower95,3),
+    Upper_95CI=round(upper95,3),
+    OR_95CI,
+    P_value=P_value_fmt,
+    P_interaction=P_interaction_fmt,
+    P_interaction_FDR=P_interaction_FDR_fmt
+  )
+
+write.csv(
+  subgroup_table,
+  file.path(out_dir,"Step22_MI_CMB_subgroup_OR_CI_P_table.csv"),
+  row.names=FALSE
+)
+
+interaction_table <- interaction_summary %>%
+  mutate(
+    Subgroup_Label=recode(Subgroup,!!!label_map,.default=Subgroup)
+  ) %>%
+  transmute(
+    Subgroup=Subgroup_Label,
+    P_interaction_raw=P_Interaction,
+    P_interaction_raw_fmt=P_raw_fmt,
+    P_interaction_FDR=P_FDR,
+    P_interaction_FDR_fmt=P_FDR_fmt
+  )
+
+write.csv(
+  interaction_table,
+  file.path(out_dir,"Step22_MI_CMB_interaction_P_table.csv"),
+  row.names=FALSE
+)
+
+# ==============================================================================
+# 11. FOREST PLOT DATA — UNCHANGED
+# ==============================================================================
+
+subgroup_order <- c(
+  "Sex","Age group, years","Body mass index",
+  "Weekday sleep duration","Weekend sleep duration"
+)
+
+level_order_map <- list(
+  "Sex"=levels(MI_list[[1]]$Sex_cat),
+  "Age group, years"=c("18-39","40-59","≥60"),
+  "Body mass index"=c(
+    "Normal weight or below (<25)",
+    "Overweight (25-29.9)",
+    "Obese (≥30)"
+  ),
+  "Weekday sleep duration"=c("7-9 hours","<7 hours","≥9 hours"),
+  "Weekend sleep duration"=c("7-9 hours","<7 hours","≥9 hours")
+)
+
+plot_ready <- subgroup_table %>% filter(Subgroup%in%subgroup_order)
+plot_rows <- list()
+
+for(sub in subgroup_order){
+  
+  x <- plot_ready %>% filter(Subgroup==sub)
+  if(nrow(x)==0) next
+  
+  x <- x %>%
+    mutate(Level=factor(Level,levels=level_order_map[[sub]])) %>%
+    arrange(Level)
+  
+  plot_rows[[length(plot_rows)+1]] <- data.frame(
+    Subgroup=sub,Level=sub,N=NA,Events=NA,
+    OR=NA,Lower_95CI=NA,Upper_95CI=NA,is_header=TRUE
+  )
+  
+  plot_rows[[length(plot_rows)+1]] <- x %>%
+    transmute(
+      Subgroup,Level=as.character(Level),N,Events,
+      OR,Lower_95CI,Upper_95CI,is_header=FALSE
+    )
+}
+
+final_plot_df <- bind_rows(plot_rows) %>%
+  mutate(
+    row_id=row_number(),
+    y_pos=max(row_id)-row_id+1
+  )
+
+write.csv(
+  final_plot_df,
+  file.path(out_dir,"Step22_MI_CMB_subgroup_forest_plot_data_clean.csv"),
+  row.names=FALSE
+)
+
+# ==============================================================================
+# 12. CLEAN FOREST PLOT — UNCHANGED
+# ==============================================================================
+
+final_plot_df2 <- final_plot_df %>%
+  mutate(
+    OR_CI_text=ifelse(
+      is_header|is.na(OR),"",
+      sprintf("%.2f (%.2f-%.2f)",OR,Lower_95CI,Upper_95CI)
+    )
+  )
+
+est_df2 <- final_plot_df2 %>% filter(!is_header,!is.na(OR))
+
+header_y <- max(final_plot_df2$y_pos)+0.75
+y_limits <- c(0.5,header_y+0.35)
+
+forest_min <- 0.85
+forest_max <- 1.65
+forest_breaks <- seq(0.90,1.60,by=0.10)
+
+if(
+  min(est_df2$Lower_95CI,na.rm=TRUE)<forest_min ||
+  max(est_df2$Upper_95CI,na.rm=TRUE)>forest_max
+) stop("Forest plot x-axis limits do not contain all 95% CIs.")
+
+p_left_clean <- ggplot()+
+  geom_text(
+    data=final_plot_df2%>%filter(is_header),
+    aes(x=0,y=y_pos,label=Level),
+    hjust=0,fontface="bold",size=3.6
+  )+
+  geom_text(
+    data=final_plot_df2%>%filter(!is_header),
+    aes(x=0.04,y=y_pos,label=Level),
+    hjust=0,size=3.3
+  )+
+  scale_x_continuous(limits=c(0,1),expand=c(0,0))+
+  scale_y_continuous(limits=y_limits,expand=c(0,0))+
+  coord_cartesian(clip="off")+
+  theme_void()+
+  theme(plot.margin=margin(t=10,r=3,b=35,l=5))
+
+p_middle_clean <- ggplot(est_df2,aes(x=OR,y=y_pos))+
+  geom_vline(
+    xintercept=1,linetype="dashed",
+    linewidth=0.45,color="grey45"
+  )+
+  geom_errorbar(
+    aes(xmin=Lower_95CI,xmax=Upper_95CI),
+    orientation="y",width=0.15,
+    linewidth=0.70,color="#0072B2"
+  )+
+  geom_point(shape=15,size=2.6,color="#D55E00")+
+  scale_x_continuous(
+    limits=c(forest_min,forest_max),
+    breaks=forest_breaks,
+    expand=expansion(mult=c(0.01,0.01))
+  )+
+  scale_y_continuous(limits=y_limits,expand=c(0,0))+
+  labs(
+    x="OR per 1-SD higher sleep rhythm disruption index",
+    y=NULL
+  )+
+  theme_classic(base_size=11)+
+  theme(
+    axis.text.y=element_blank(),
+    axis.ticks.y=element_blank(),
+    axis.line.y=element_blank(),
+    axis.title.x=element_text(size=11,margin=margin(t=7)),
+    axis.text.x=element_text(size=10),
+    panel.grid=element_blank(),
+    plot.margin=margin(t=10,r=5,b=5,l=3)
+  )
+
+p_forest_clean <- p_left_clean+p_middle_clean+
+  plot_layout(widths=c(1.20,3.4))
+
+ggsave(
+  file.path(fig_dir,"Step22_MI_CMB_subgroup_forest_plot_clean.tiff"),
+  p_forest_clean,width=7.2,height=7.5,units="in",
+  dpi=600,compression="lzw",bg="white"
+)
+
+ggsave(
+  file.path(fig_dir,"Step22_MI_CMB_subgroup_forest_plot_clean.png"),
+  p_forest_clean,width=7.2,height=7.5,units="in",
+  dpi=600,bg="white"
+)
+
+ggsave(
+  file.path(fig_dir,"Step22_MI_CMB_subgroup_forest_plot_clean.pdf"),
+  p_forest_clean,width=7.2,height=7.5,
+  device=grDevices::cairo_pdf,bg="white"
+)
+
+# ==============================================================================
+# 12B. FINAL PUBLICATION FOREST PLOT — UNCHANGED
+# ==============================================================================
+
+p_left <- ggplot()+
+  annotate(
+    "text",x=0,y=header_y,label="Subgroup",
+    hjust=0,fontface="bold",size=3.7
+  )+
+  geom_text(
+    data=final_plot_df2%>%filter(is_header),
+    aes(x=0,y=y_pos,label=Level),
+    hjust=0,fontface="bold",size=3.6
+  )+
+  geom_text(
+    data=final_plot_df2%>%filter(!is_header),
+    aes(x=0.04,y=y_pos,label=Level),
+    hjust=0,size=3.3
+  )+
+  scale_x_continuous(limits=c(0,1),expand=c(0,0))+
+  scale_y_continuous(limits=y_limits,expand=c(0,0))+
+  coord_cartesian(clip="off")+
+  theme_void()+
+  theme(plot.margin=margin(t=10,r=3,b=35,l=5))
+
+p_middle <- ggplot(est_df2,aes(x=OR,y=y_pos))+
+  geom_vline(
+    xintercept=1,linetype="dashed",
+    linewidth=0.45,color="grey45"
+  )+
+  geom_errorbar(
+    aes(xmin=Lower_95CI,xmax=Upper_95CI),
+    orientation="y",width=0.15,
+    linewidth=0.70,color="#0072B2"
+  )+
+  geom_point(shape=15,size=2.6,color="#D55E00")+
+  scale_x_continuous(
+    limits=c(forest_min,forest_max),
+    breaks=forest_breaks,
+    expand=expansion(mult=c(0.01,0.01))
+  )+
+  scale_y_continuous(limits=y_limits,expand=c(0,0))+
+  labs(
+    x="OR per 1-SD higher sleep rhythm disruption index",
+    y=NULL
+  )+
+  theme_classic(base_size=11)+
+  theme(
+    axis.text.y=element_blank(),
+    axis.ticks.y=element_blank(),
+    axis.line.y=element_blank(),
+    axis.title.x=element_text(size=11,margin=margin(t=7)),
+    axis.text.x=element_text(size=10),
+    panel.grid=element_blank(),
+    plot.margin=margin(t=10,r=3,b=5,l=3)
+  )
+
+p_right <- ggplot()+
+  annotate(
+    "text",x=0,y=header_y,label="OR (95% CI)",
+    hjust=0,fontface="bold",size=3.7
+  )+
+  geom_text(
+    data=final_plot_df2%>%filter(!is_header),
+    aes(x=0,y=y_pos,label=OR_CI_text),
+    hjust=0,size=3.3
+  )+
+  scale_x_continuous(limits=c(0,1),expand=c(0,0))+
+  scale_y_continuous(limits=y_limits,expand=c(0,0))+
+  theme_void()+
+  theme(plot.margin=margin(t=10,r=5,b=35,l=2))
+
+p_forest_values <- p_left+p_middle+p_right+
+  plot_layout(widths=c(1.25,3.4,1.30))
+
+ggsave(
+  file.path(fig_dir,"Step22_MI_CMB_subgroup_forest_plot_with_OR_CI.tiff"),
+  p_forest_values,width=8.6,height=7.5,units="in",
+  dpi=600,compression="lzw",bg="white"
+)
+
+ggsave(
+  file.path(fig_dir,"Step22_MI_CMB_subgroup_forest_plot_with_OR_CI.png"),
+  p_forest_values,width=8.6,height=7.5,units="in",
+  dpi=600,bg="white"
+)
+
+ggsave(
+  file.path(fig_dir,"Step22_MI_CMB_subgroup_forest_plot_with_OR_CI.pdf"),
+  p_forest_values,width=8.6,height=7.5,
+  device=grDevices::cairo_pdf,bg="white"
+)
+
+# ==============================================================================
+# 13. QC SUMMARY
+# ==============================================================================
+
+qc <- data.frame(
+  item=c(
+    "input_dataset","number_of_imputations","n_per_imputation",
+    "exposure","exposure_scale","outcome",
+    "interaction_variables_n","plotted_subgroup_variables",
+    "survey_weight","adjustment_model","subgroup_pooling_method",
+    "interaction_test","FDR_adjustment","forest_plot_tiff"
+  ),
+  value=c(
+    data_path,M,nrow(MI_list[[1]]),raw_exposure,
+    "Per 1-SD higher continuous sleep rhythm disruption index",
+    outcome_var,length(all_subgroup_vars),
+    paste(plot_subgroup_vars,collapse=", "),
+    "mec_adj",
+    "Exact STEP19 Model 4; subgroup-defining covariate omitted where applicable",
+    "Rubin rules with Barnard-Rubin finite degrees of freedom",
+    "D1 finite-df MI joint test of exposure-by-subgroup interaction terms",
+    "Benjamini-Hochberg FDR; raw interaction P remains primary",
+    file.path(fig_dir,"Step22_MI_CMB_subgroup_forest_plot_with_OR_CI.tiff")
+  )
+)
+
+write.csv(
+  qc,
+  file.path(out_dir,"Step22_MI_CMB_subgroup_QC_summary.csv"),
+  row.names=FALSE
+)
+
+expected <- c(
+  file.path(out_dir,"Step22_MI_missingness_audit.csv"),
+  file.path(out_dir,"Step22_MI_subgroup_distribution.csv"),
+  file.path(out_dir,"Step22_MI_CMB_interaction_summary_FDR.csv"),
+  file.path(out_dir,"Step22_MI_CMB_subgroup_raw_results.csv"),
+  file.path(out_dir,"Step22_MI_CMB_subgroup_OR_CI_P_table.csv"),
+  file.path(out_dir,"Step22_MI_CMB_interaction_P_table.csv"),
+  file.path(out_dir,"Step22_MI_CMB_subgroup_forest_plot_data_clean.csv"),
+  file.path(fig_dir,"Step22_MI_CMB_subgroup_forest_plot_clean.tiff"),
+  file.path(fig_dir,"Step22_MI_CMB_subgroup_forest_plot_with_OR_CI.tiff"),
+  file.path(out_dir,"Step22_MI_CMB_subgroup_QC_summary.csv")
+)
+
+if(any(!file.exists(expected)))
+  stop("One or more STEP22 outputs are missing.")
+
+cat("\n============================================================\n")
+cat("STEP22 MI SLEEP RHYTHM SUBGROUP/INTERACTION FINAL: PASS\n")
+cat("MI datasets:",M,"\n")
+cat("N per MI:",nrow(MI_list[[1]]),"\n")
+cat("Exposure: per 1-SD sleep rhythm disruption index\n")
+cat("Outcome:",outcome_var,"\n")
+cat("Adjustment: exact STEP19 Model 4\n")
+cat("Barnard-Rubin subgroup pooling: PASS\n")
+cat("D1 finite-df interaction tests: PASS\n")
+cat("BH-FDR supplementary adjustment: PASS\n")
+cat("Subgroup table:",file.path(out_dir,"Step22_MI_CMB_subgroup_OR_CI_P_table.csv"),"\n")
+cat("Interaction table:",file.path(out_dir,"Step22_MI_CMB_interaction_P_table.csv"),"\n")
+cat("Forest plot:",file.path(fig_dir,"Step22_MI_CMB_subgroup_forest_plot_with_OR_CI.tiff"),"\n")
+cat("============================================================\n")
+
+print(interaction_summary)
+print(subgroup_table)
